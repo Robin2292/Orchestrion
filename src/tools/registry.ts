@@ -122,9 +122,10 @@ export class ToolRegistry {
       const row = this.#tools.get(identity(current))!;
       if (!row.review) throw new StorageError("TOOL_PLANNER_NOT_READY");
       if (row.review.effect !== "read_only") throw new StorageError("TOOL_PROTECTED_NOT_READY");
-      if (row.review.resourceKind !== "logical_workspace_path") throw new StorageError("TOOL_RESOURCE_NOT_READY");
-      // The adapter callable stays private to this closure; only the admission
-      // service's execute() can reach it, and only with a plan it prepared itself.
+      if (row.review.resourceKind !== "logical_workspace_path" && row.review.resourceKind !== "http_endpoint")
+        throw new StorageError("TOOL_RESOURCE_NOT_READY");
+      // The adapter callable stays private to this closure; only a service
+      // execution path can reach it with a plan prepared by that same service.
       return { review: structuredClone(row.review), plan: (input) => deterministicPlan(row.planner, input), adapter: row.adapter };
     });
   }

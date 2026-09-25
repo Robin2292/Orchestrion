@@ -6,7 +6,7 @@ import { IPC, type DesktopWindowState } from "../shared/contracts";
 import { installBackgroundShutdown } from "./background/shutdown";
 import { BackgroundHost } from "./background/client";
 import { TrustedDocuments } from "./background/sender";
-import { openSystemFile } from "./background/ipc";
+import { openOAuthBrowser, openSystemFile } from "./background/ipc";
 import { registerIpc } from "./ipc";
 import { DesktopUpdater } from "./updater";
 import { registerUpdaterIpc } from "./updater-ipc";
@@ -86,7 +86,13 @@ void app.whenReady().then(async () => {
       process.env[key] ? [[key, process.env[key]!]] : [])),
   }), openSystemFile, undefined, (pid) => {
     try { process.kill(-pid, "SIGKILL"); } catch { /* child already exited */ }
-  }, app.getPath("userData"));
+  }, app.getPath("userData"), openOAuthBrowser);
+  host.on("codex-oauth-diagnostic", diagnostic => {
+    console.warn("Codex OAuth callback failed", diagnostic);
+  });
+  host.on("codex-text-diagnostic", diagnostic => {
+    console.warn("Codex Direct text provider", diagnostic);
+  });
   documents = new TrustedDocuments((id) => host!.revoke(id));
   unregisterIpc = registerIpc(host, documents, currentWindowState);
   // The updater runs only in Electron main. Development never imports its

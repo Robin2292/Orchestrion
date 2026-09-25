@@ -1,30 +1,38 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { KeychainAdapter } from "../main/credentials/keychain";
+import { CODEX_TEXT_MAX_OUTPUT_TOKENS } from "../providers/codex-responses-text";
 import { StorageError, type SqliteFoundation, type SqliteUnit } from "../storage/sqlite/foundation";
 import { DirectSessionService, type DirectExecutionBinding } from "./service";
 import { DirectProviderCallRepository, type DirectProviderCallRow } from "./provider-call-repository";
 
 const DIGEST_VERSION="local-provider-request-v1";
-const MAX_INPUT_BYTES=8192,MAX_OUTPUT_TOKENS=1024,MAX_COST_MICROS=1_000_000_000_000;
+const MAX_INPUT_BYTES=65536,MAX_OUTPUT_TOKENS=1024,MAX_COST_MICROS=1_000_000_000_000;
+// Version 1 subscription calls reserved only 1,024 output tokens. This value
+// is accepted solely to identify an already SETTLED durable result; no legacy
+// request may be reserved or claimed for a new physical dispatch.
+const LEGACY_CODEX_TEXT_OUTPUT_TOKENS_V1=1024;
 const sha=(value:string|Buffer)=>createHash("sha256").update(value).digest("hex");
 const deny=(code:string):never=>{throw new StorageError(code);};
 const positive=(n:unknown,max:number)=>typeof n==="number"&&Number.isSafeInteger(n)&&n>0&&n<=max;
 const money=(n:unknown)=>typeof n==="number"&&Number.isSafeInteger(n)&&n>=0&&n<=1_000_000;
 const now=()=>new Date().toISOString();
 
-/** A host-selected, immutable synthetic fixture price. No renderer, model or
- * A3 public event may supply this authority. Live models need a separate gate. */
-export interface FixturePricing {
-  readonly kind:"fixture_synthetic";readonly modelId:"fixture-readonly-v1";
+/** Host-selected immutable pricing. Subscription calls record tokens and zero
+ * marginal USD; no unverified API-equivalent price is inferred. */
+export interface ProviderPricing {
+  readonly kind:"fixture_synthetic"|"codex_subscription";
+  readonly modelId:"fixture-readonly-v1"|"gpt-6-luna";
   readonly billing:"metered"|"subscription_zero_actual";
   readonly maxOutputTokens:number;readonly inputUsdPerMillion:number;
   readonly outputUsdPerMillion:number;
+  readonly authBindingHash?:string;
 }
 export interface FixtureRequest {
   sessionId:string;attemptId:string;binding:DirectExecutionBinding;logicalSlot:string;
-  physicalIndex:number;messages:readonly {role:"system"|"user";content:string}[];
-  pricing:FixturePricing;
+  physicalIndex:number;messages:readonly {role:"system"|"user"|"assistant";content:string}[];
+  pricing:ProviderPricing;
 }
+export type FixturePricing=ProviderPricing;
 export interface FixtureUsage {inputTokens:number;outputTokens:number}
 export type ReservedFixtureCall={kind:"reserved";id:string;digest:string;reservedTokens:number;reservedMicrousd:number}
   |{kind:"replayable"|"applied";id:string;digest:string;reservedTokens:number;reservedMicrousd:number};
@@ -71,30 +79,57 @@ export class DirectProviderCallLedger {
       return value;
     } catch(error) {value.fill(0);throw error;}
   }
-  private request(raw:FixtureRequest) {
+  private request(raw:FixtureRequest,legacyReplay=false) {
     const p=raw.pricing;
-    if(p?.kind!=="fixture_synthetic"||p.modelId!=="fixture-readonly-v1"
+    if(!((p?.kind==="fixture_synthetic"&&p.modelId==="fixture-readonly-v1")
+        ||(p?.kind==="codex_subscription"&&p.modelId==="gpt-6-luna"
+          &&p.billing==="subscription_zero_actual"&&p.inputUsdPerMillion===0
+          &&p.outputUsdPerMillion===0&&typeof p.authBindingHash==="string"
+          &&/^[0-9a-f]{64}$/.test(p.authBindingHash)))
+      ||(p?.kind==="fixture_synthetic"&&p.authBindingHash!==undefined)
       || !["metered","subscription_zero_actual"].includes(p.billing)
-      || !positive(p.maxOutputTokens,MAX_OUTPUT_TOKENS)
+      || !positive(p.maxOutputTokens,p.kind==="codex_subscription"
+        ?CODEX_TEXT_MAX_OUTPUT_TOKENS:MAX_OUTPUT_TOKENS)
+      || (p.kind==="codex_subscription"&&p.maxOutputTokens!==
+        (legacyReplay?LEGACY_CODEX_TEXT_OUTPUT_TOKENS_V1:CODEX_TEXT_MAX_OUTPUT_TOKENS))
       || !money(p.inputUsdPerMillion)||!money(p.outputUsdPerMillion)
       || !Number.isSafeInteger(raw.physicalIndex)||raw.physicalIndex<1||raw.physicalIndex>1000
       || typeof raw.logicalSlot!=="string"||!raw.logicalSlot||raw.logicalSlot.length>128
-      || !Array.isArray(raw.messages)||raw.messages.length<1||raw.messages.length>2
-      || raw.messages.some(m=>!m||!["system","user"].includes(m.role)
+      || !Array.isArray(raw.messages)||raw.messages.length<1||raw.messages.length>256
+      || raw.messages.some(m=>!m||!["system","user","assistant"].includes(m.role)
         || typeof m.content!=="string"||Object.keys(m).sort().join()!=="content,role")
       || raw.messages[raw.messages.length-1].role!=="user"
-      || (raw.messages.length===2&&raw.messages[0].role!=="system"))
+      || raw.messages.some((m,i)=>m.role==="system"&&(i>1||i>0&&raw.messages[i-1]?.role!=="system"))
+      || raw.messages.some((m,i)=>m.role==="assistant"&&(i===0||raw.messages[i-1]?.role!=="user"))
+      || raw.messages.some((m,i)=>m.role==="user"&&i>0&&raw.messages[i-1]?.role==="user"))
       deny("PROVIDER_RESERVATION_BASIS_INVALID");
     const canonical=JSON.stringify({version:DIGEST_VERSION,provider:"local",model:p.modelId,
       messages:raw.messages,maxTokens:p.maxOutputTokens});
     const inputBytes=Buffer.byteLength(JSON.stringify(raw.messages));
     if(inputBytes<1||inputBytes>MAX_INPUT_BYTES) deny("PROVIDER_REQUEST_TOO_LARGE");
-    const reservedTokens=inputBytes+p.maxOutputTokens;
-    const priced=Math.ceil(inputBytes*p.inputUsdPerMillion+p.maxOutputTokens*p.outputUsdPerMillion);
+    // Subscription transport can report provider-side framing tokens absent
+    // from our JSON. Reserve a conservative bound before physical I/O.
+    const inputLimit=p.kind==="codex_subscription"?Math.min(MAX_INPUT_BYTES,inputBytes*4):inputBytes;
+    const reservedTokens=inputLimit+p.maxOutputTokens;
+    const priced=Math.ceil(inputLimit*p.inputUsdPerMillion+p.maxOutputTokens*p.outputUsdPerMillion);
     const reservedMicrousd=p.billing==="metered"?priced:0;
     if(!Number.isSafeInteger(priced)||priced>MAX_COST_MICROS) deny("PROVIDER_RESERVATION_BASIS_INVALID");
     return {digest:sha(canonical),inputBytes,reservedTokens,reservedMicrousd,
-      pricing:JSON.stringify({...p,maxInputTokens:inputBytes,digestVersion:DIGEST_VERSION})};
+      pricing:JSON.stringify({...p,maxInputTokens:inputLimit,digestVersion:DIGEST_VERSION})};
+  }
+  /** Match persisted v1 pricing only for a fully settled subscription call.
+   * The caller's new reservation basis is never downgraded for fresh I/O. */
+  private replayBasis(raw:FixtureRequest,row:DirectProviderCallRow,current:ReturnType<DirectProviderCallLedger["request"]>) {
+    if(row.request_digest===current.digest&&row.pricing_json===current.pricing)return current;
+    if(row.lifecycle!=="settled"||row.result_state==="none"
+      ||raw.pricing.kind!=="codex_subscription"
+      ||raw.pricing.maxOutputTokens!==CODEX_TEXT_MAX_OUTPUT_TOKENS
+      ||row.digest_version!==DIGEST_VERSION)return current;
+    const legacy=this.request({...raw,pricing:{...raw.pricing,
+      maxOutputTokens:LEGACY_CODEX_TEXT_OUTPUT_TOKENS_V1}},true);
+    return row.request_digest===legacy.digest&&row.pricing_json===legacy.pricing
+      &&row.model_id===raw.pricing.modelId&&row.reserved_tokens===legacy.reservedTokens
+      &&row.reserved_microusd===legacy.reservedMicrousd?legacy:current;
   }
   private binding(row:DirectProviderCallRow,raw:FixtureRequest,digest:string,pin:{agentId:string;
     agentVersionId:string;assignmentVersionId:string;authorityHash:string;configHash:string}):void {
@@ -113,15 +148,16 @@ export class DirectProviderCallLedger {
     const existing=this.direct.withProviderAttempt(raw.sessionId,raw.attemptId,raw.binding,"replay",(tx,pin)=>{
       const r=new DirectProviderCallRepository(tx,this.store.workspace.org_id),row=r.slot(raw.attemptId,raw.logicalSlot,raw.physicalIndex);
       if(!row)return null;
-      this.binding(row,raw,q.digest,pin);
-      if(row.pricing_json!==q.pricing) deny("PROVIDER_REQUEST_REPLAY_MISMATCH");
+      const basis=this.replayBasis(raw,row,q);
+      this.binding(row,raw,basis.digest,pin);
+      if(row.pricing_json!==basis.pricing) deny("PROVIDER_REQUEST_REPLAY_MISMATCH");
       return row;
     });
     if(existing) {
       if(existing.lifecycle==="started"||existing.lifecycle==="unknown") deny("PROVIDER_EXECUTION_DISPATCH_AMBIGUOUS");
       if(existing.lifecycle==="released") deny("PROVIDER_CALL_RELEASED");
       return {kind:existing.lifecycle==="reserved"?"reserved":existing.result_state==="applied"?"applied":"replayable",
-        id:existing.id,digest:q.digest,reservedTokens:existing.reserved_tokens,
+        id:existing.id,digest:existing.request_digest,reservedTokens:existing.reserved_tokens,
         reservedMicrousd:existing.reserved_microusd};
     }
     return this.direct.withProviderAttempt(raw.sessionId,raw.attemptId,raw.binding,"dispatch",(tx,pin)=>{
@@ -235,8 +271,9 @@ export class DirectProviderCallLedger {
     const row=this.direct.withProviderAttempt(raw.sessionId,raw.attemptId,raw.binding,"replay",(tx,pin)=>{
       const r=new DirectProviderCallRepository(tx,this.store.workspace.org_id);
       const found=r.slot(raw.attemptId,raw.logicalSlot,raw.physicalIndex);
-      if(!found)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");this.binding(found,raw,q.digest,pin);
-      if(found.pricing_json!==q.pricing||found.lifecycle!=="settled"||found.result_state==="none")
+      if(!found)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");
+      const basis=this.replayBasis(raw,found,q);this.binding(found,raw,basis.digest,pin);
+      if(found.pricing_json!==basis.pricing||found.lifecycle!=="settled"||found.result_state==="none")
         deny("PROVIDER_RESULT_UNREPLAYABLE");
       return found;
     });
@@ -245,13 +282,21 @@ export class DirectProviderCallLedger {
       usage:payload.usage,cost:row.actual_microusd!,wouldHave:row.would_have_microusd!};
   }
   apply(raw:FixtureRequest,id:string,decision:string):{text:string;cost:number;wouldHave:number} {
+    return this.applyFinal(raw,id,decision,()=>{});
+  }
+  /** Final answer facts can be committed in the same transaction as the
+   * ProviderCall APPLIED decision and terminal attempt transition. */
+  applyFinal(raw:FixtureRequest,id:string,decision:string,
+    checkpoint:(tx:SqliteUnit,text:string,pin:{agentVersionId:string;assignmentVersionId:string})=>void):
+    {text:string;cost:number;wouldHave:number} {
     const q=this.request(raw);
     const replay=this.replay(raw);
     if(replay.id!==id)deny("PROVIDER_REQUEST_REPLAY_MISMATCH");
     return this.direct.withProviderAttempt(raw.sessionId,raw.attemptId,raw.binding,"replay",(tx,pin)=>{
       const r=new DirectProviderCallRepository(tx,this.store.workspace.org_id),row=r.id(id);
-      if(!row)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");this.binding(row,raw,q.digest,pin);
-      if(row.pricing_json!==q.pricing||row.lifecycle!=="settled")deny("PROVIDER_RESULT_UNREPLAYABLE");
+      if(!row)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");
+      const basis=this.replayBasis(raw,row,q);this.binding(row,raw,basis.digest,pin);
+      if(row.pricing_json!==basis.pricing||row.lifecycle!=="settled")deny("PROVIDER_RESULT_UNREPLAYABLE");
       const continuation=JSON.stringify({version:"direct-provider-decision-v1",kind:"terminal_final",
         providerCallId:id,attemptId:raw.attemptId,logicalSlot:raw.logicalSlot,nextSlot:null,
         generation:1,fenceHash:sha(JSON.stringify([row.authority_hash,row.fencing_token,row.capsule_hash]))});
@@ -259,10 +304,13 @@ export class DirectProviderCallLedger {
       if(row.result_state==="applied") {
         if(row.decision_hash!==hash||row.continuation_json!==continuation)
           deny("PROVIDER_DECISION_REPLAY_MISMATCH");
+        checkpoint(tx,replay.text,pin);
         return {text:replay.text,cost:replay.cost,wouldHave:replay.wouldHave};
       }
-      if(row.result_state!=="replayable"||!r.apply(id,hash,continuation,now())
-        ||!r.finishAttempt(raw.sessionId,raw.attemptId))deny("PROVIDER_DECISION_CHECKPOINT_REQUIRED");
+      if(row.result_state!=="replayable"||!r.apply(id,hash,continuation,now()))
+        deny("PROVIDER_DECISION_CHECKPOINT_REQUIRED");
+      checkpoint(tx,replay.text,pin);
+      if(!r.finishAttempt(raw.sessionId,raw.attemptId))deny("PROVIDER_DECISION_CHECKPOINT_REQUIRED");
       return {text:replay.text,cost:replay.cost,wouldHave:replay.wouldHave};
     });
   }
@@ -274,8 +322,9 @@ export class DirectProviderCallLedger {
     if(replay.id!==id||!decision)deny("PROVIDER_REQUEST_REPLAY_MISMATCH");
     return this.direct.withProviderAttempt(raw.sessionId,raw.attemptId,raw.binding,"replay",(tx,pin)=>{
       const r=new DirectProviderCallRepository(tx,this.store.workspace.org_id),row=r.id(id);
-      if(!row)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");this.binding(row,raw,q.digest,pin);
-      if(row.pricing_json!==q.pricing||row.lifecycle!=="settled")deny("PROVIDER_RESULT_UNREPLAYABLE");
+      if(!row)throw new StorageError("PROVIDER_CALL_UNAVAILABLE");
+      const basis=this.replayBasis(raw,row,q);this.binding(row,raw,basis.digest,pin);
+      if(row.pricing_json!==basis.pricing||row.lifecycle!=="settled")deny("PROVIDER_RESULT_UNREPLAYABLE");
       const continuation=JSON.stringify({version:"direct-provider-decision-v1",kind:"context_compaction",
         providerCallId:id,attemptId:raw.attemptId,logicalSlot:raw.logicalSlot,
         fenceHash:sha(JSON.stringify([row.authority_hash,row.fencing_token,row.capsule_hash]))});

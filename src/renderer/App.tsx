@@ -25,6 +25,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Terminal,
@@ -86,6 +87,7 @@ import { LocalPoliciesHost,policyUiErrorMessage } from "./LocalPoliciesHost";
 import type { LocalPolicyUiWorkspace } from "../shared/policy/p2-ui-contracts";
 import type { LocalDirectSessionItem } from "../shared/direct-session-ui-contracts";
 import { DirectSessionHost, readDirectSessions } from "./DirectSessionHost";
+import { ProviderConnectionDialog, ProviderSettingsHost } from "./ProviderConnections";
 
 interface ComposerDraft { text: string; attachments: ComposerAttachment[]; attachmentLimitExceeded?: boolean }
 interface NewSessionDraft extends ComposerDraft {
@@ -198,6 +200,7 @@ function DesktopApp({ onWorkspaceDirtyStateChange, workspaceDirty, onDiscardWork
   const [workspacePanelResizing, setWorkspacePanelResizing] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => typeof window === "undefined" ? 1440 : window.innerWidth);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [agentDetailsOpen, setAgentDetailsOpen] = useState(false);
   const [treeMenu, setTreeMenu] = useState<
     | { kind: "project"; project: ProjectRecord; x: number; y: number }
@@ -352,7 +355,7 @@ function DesktopApp({ onWorkspaceDirtyStateChange, workspaceDirty, onDiscardWork
   const localAgentViewActive = activeRoute.kind === "local-agents" || activeRoute.kind === "local-agent-create" || activeRoute.kind === "local-agent" || activeRoute.kind === "project-agents" || activeRoute.kind === "project-agent-add" || activeRoute.kind === "project-agent-create" || activeRoute.kind === "agent-library" || activeRoute.kind === "agent-library-detail" || activeRoute.kind === "agent-library-create";
   const localPolicyViewActive = activeRoute.kind === "local-policies" || activeRoute.kind === "local-policy";
   const workspaceContextViewActive = activeRoute.kind === "workspace" || activeRoute.kind === "session" || activeRoute.kind === "direct-session" || activeRoute.kind === "project-settings" || activeRoute.kind === "agent-settings";
-  const streamlinedManagementViewActive = activeRoute.kind === "inbox" || localAgentViewActive || localPolicyViewActive;
+  const streamlinedManagementViewActive = activeRoute.kind === "inbox" || activeRoute.kind === "provider-settings" || localAgentViewActive || localPolicyViewActive;
 
   useEffect(() => {
     if (!messageViewportRef.current || selectedSessionId === previousSessionId.current) return;
@@ -864,6 +867,7 @@ function DesktopApp({ onWorkspaceDirtyStateChange, workspaceDirty, onDiscardWork
   } as CSSProperties;
   const routeContextLabel = activeRoute.kind === "inbox"
     ? activeProject ? `${activeProject.name} – Inbox` : "Inbox"
+    : activeRoute.kind === "provider-settings" ? "Providers"
     : activeRoute.kind === "direct-session" ? "Direct Session"
     : activeRoute.kind === "project-settings"
       ? `${activeProject?.name ?? "Project"} – ${PROJECT_SECTION_LABELS[activeRoute.section]}`
@@ -1020,6 +1024,7 @@ function DesktopApp({ onWorkspaceDirtyStateChange, workspaceDirty, onDiscardWork
             <button type="button" className={`global-navigation-item ${localPolicyViewActive ? "active" : ""}`} aria-label="Policies" aria-current={localPolicyViewActive ? "page" : undefined} disabled={!localPolicyWorkspace} onClick={() => localPolicyWorkspace && navigate({ kind: "local-policies", projectId: localPolicyWorkspace.projectId })} data-label="Policies"><ShieldCheck size={18} />{Boolean(localPolicyWorkspace?.items.length) && <span className="global-navigation-count">{localPolicyWorkspace!.items.length}</span>}<span className="global-navigation-tooltip">Policies</span></button>
           </div>
           <div className="global-navigation-bottom">
+            <button type="button" className={`global-navigation-item ${activeRoute.kind === "provider-settings" ? "active" : ""}`} aria-label="Settings · Providers" aria-current={activeRoute.kind === "provider-settings" ? "page" : undefined} onClick={() => navigate({ kind: "provider-settings" })} data-label="Settings"><Settings2 size={18} /><span className="global-navigation-tooltip">Settings</span></button>
             <UpdateEntry bridge={api?.updaterBridge} workspaceDirty={workspaceDirty} onDiscardWorkspaceChanges={onDiscardWorkspaceChanges} />
             <div className="global-navigation-footer" ref={profileRef}>
               {profileOpen && <div className="profile-popover global-profile-popover" role="status" aria-label="Local profile"><div className="profile-popover-heading"><div className="avatar">L</div><div><strong>Local profile</strong><span>No account connected</span></div></div><div className="local-note"><ShieldCheck size={14} /><span>Local runtime<br /><small>{snapshot.appServer.status === "ready" ? `Codex ${snapshot.appServer.codexVersion ?? "connected"}` : snapshot.appServer.status}</small></span></div></div>}
@@ -1058,22 +1063,24 @@ function DesktopApp({ onWorkspaceDirtyStateChange, workspaceDirty, onDiscardWork
           {bootError && <DiagnosticBanner diagnostic={{ code: "handshake_failed", message: bootError }} onRetry={retry} busy={busy} />}
           {!bootError && snapshot.appServer.diagnostic && <DiagnosticBanner diagnostic={snapshot.appServer.diagnostic} onRetry={retry} busy={busy} />}
           {actionError && <div className="action-error" role="alert"><AlertCircle size={15} /><span>{actionError}</span><button className="icon-button subtle" onClick={() => setActionError(null)} aria-label="Dismiss error"><X size={14} /></button></div>}
-          {activeRoute.kind==="direct-session" ? <DirectSessionHost key={`${activeRoute.projectId}:${activeRoute.sessionId??"new"}`} api={api} projectId={activeRoute.projectId} projectName={snapshot.projects.find(item=>item.id===activeRoute.projectId)?.name??"Project"} sessionId={activeRoute.sessionId} onSelect={id=>navigate({kind:"direct-session",projectId:activeRoute.projectId,sessionId:id})} onChanged={reloadDirectSessions} /> : sessionViewActive && composerSettings && activeAgent && activeProject ? <>
+          {activeRoute.kind==="direct-session" ? <DirectSessionHost key={`${activeRoute.projectId}:${activeRoute.sessionId??"new"}`} api={api} projectId={activeRoute.projectId} projectName={snapshot.projects.find(item=>item.id===activeRoute.projectId)?.name??"Project"} sessionId={activeRoute.sessionId} onSelect={id=>navigate({kind:"direct-session",projectId:activeRoute.projectId,sessionId:id})} onChanged={reloadDirectSessions} onConnectProviders={() => setProviderDialogOpen(true)} /> : sessionViewActive && composerSettings && activeAgent && activeProject ? <>
             <section className="message-viewport" ref={messageViewportRef} onScroll={trackLiveOutputPreference}>
               {runtime.messages.length === 0 && runtime.pendingRequests.length === 0 && !runtime.error && runtime.status !== "running" && runtime.status !== "starting" ? <WelcomeState agent={activeAgent} project={activeProject} onPrompt={setDraft} /> : <div className="message-list" aria-live="polite"><ConversationTimeline messages={runtime.messages} previewUrls={attachmentPreviews} />{(runtime.status === "running" || runtime.status === "starting") && !runtime.messages.some((message) => message.streaming) && <ThinkingRow />}{runtime.error && <div className="inline-error"><AlertCircle size={15} />{runtime.error}</div>}{runtime.pendingRequests.map((request) => <RequestCard key={String(request.requestId)} request={request} onRespond={respond} />)}</div>}
             </section>
-            <div className="composer-wrap"><Composer value={composerDraft.text} attachments={composerDraft.attachments} attachmentLimitExceeded={composerDraft.attachmentLimitExceeded === true} session={composerSettings} contextWindowUsage={runtime.contextWindowUsage} models={models} onModelChange={updateSessionModel} onChange={setDraft} onSend={send} onStop={stop} onAddFiles={addFiles} onAddFolder={addFolder} onRemoveAttachment={removeAttachment} running={canStop} starting={starting} disabled={!api || snapshot.appServer.status === "error"} /></div>
-          </> : activeRoute.kind === "inbox" ? <InboxHost snapshot={snapshot} project={inboxProject} />
+            <div className="composer-wrap"><Composer value={composerDraft.text} attachments={composerDraft.attachments} attachmentLimitExceeded={composerDraft.attachmentLimitExceeded === true} session={composerSettings} contextWindowUsage={runtime.contextWindowUsage} models={models} onModelChange={updateSessionModel} onConnectProviders={() => setProviderDialogOpen(true)} onChange={setDraft} onSend={send} onStop={stop} onAddFiles={addFiles} onAddFolder={addFolder} onRemoveAttachment={removeAttachment} running={canStop} starting={starting} disabled={!api || snapshot.appServer.status === "error"} /></div>
+          </> : activeRoute.kind === "provider-settings" ? <ProviderSettingsHost projectId={localAgentWorkspace?.projectId ?? null} />
+            : activeRoute.kind === "inbox" ? <InboxHost snapshot={snapshot} project={inboxProject} />
             : activeRoute.kind === "project-agents" ? <ProjectAgentsHost projectId={activeRoute.projectId} workspace={localAgentWorkspace} api={api} />
             : activeRoute.kind === "project-agent-add" || activeRoute.kind === "project-agent-create" ? <ProjectAgentAddHost route={activeRoute} workspace={localAgentWorkspace} api={api} onWorkspaceChange={acceptLocalAgentWorkspace} onDirtyStateChange={onWorkspaceDirtyStateChange} />
             : activeRoute.kind === "agent-library" || activeRoute.kind === "agent-library-detail" || activeRoute.kind === "agent-library-create" ? <OrganizationAgentLibraryHost route={activeRoute} workspace={localAgentWorkspace} api={api} onWorkspaceChange={acceptLocalAgentWorkspace} onDirtyStateChange={onWorkspaceDirtyStateChange} />
             : activeRoute.kind === "local-agents" || activeRoute.kind === "local-agent-create" || activeRoute.kind === "local-agent" ? <LocalAgentsHost route={activeRoute} workspace={localAgentWorkspace} loadError={localAgentError} api={api} onWorkspaceChange={acceptLocalAgentWorkspace} onDirtyStateChange={onWorkspaceDirtyStateChange} />
             : activeRoute.kind === "local-policies" || activeRoute.kind === "local-policy" ? <LocalPoliciesHost route={activeRoute} workspace={localPolicyWorkspace} loadError={localPolicyError} api={api} onWorkspaceChange={acceptLocalPolicyWorkspace} onDirtyStateChange={onWorkspaceDirtyStateChange}/>
-            : activeRoute.kind === "project-settings" && activeProject ? <ProjectManagementHost project={activeProject} section={activeRoute.section} snapshot={snapshot} />
+            : activeRoute.kind === "project-settings" && activeProject ? <ProjectManagementHost project={activeProject} section={activeRoute.section} snapshot={snapshot} localProjectId={localAgentWorkspace?.projectId} />
             : activeRoute.kind === "agent-settings" && activeProject && activeAgent ? <AgentManagementHost project={activeProject} agent={activeAgent} section={activeRoute.section} sessions={snapshot.sessions.filter((session) => session.agentId === activeAgent.id)} />
             : activeRoute.kind === "recovery" ? <RouteRecovery route={activeRoute} snapshot={snapshot} />
             : <NoSessionState projects={snapshot.projects} onNewProject={() => setModal("project")} />}
         </main>
+        {providerDialogOpen && <ProviderConnectionDialog projectId={localAgentWorkspace?.projectId ?? null} onClose={() => setProviderDialogOpen(false)} onManageSubscription={() => { setProviderDialogOpen(false); navigate({kind:"provider-settings"}); }} returnFocus={() => document.querySelector<HTMLElement>(".provider-subscription-target, .direct-model-route button, .composer-model-button, [aria-label='Settings · Providers']")} />}
         {sessionViewActive && <WorkspacePanel
           state={activeWorkspacePanelState}
           geometry={panelGeometry}
@@ -1305,7 +1312,7 @@ export function MessageBubble({ message, previewUrls, compact = false }: { messa
   return <article className={`message ${user ? "message-user" : "message-assistant"}${compact ? " message-compact" : ""}`} data-message-role={user ? "user" : "assistant"}>{user ? <>{content}{avatar}</> : <>{avatar}{content}</>}</article>;
 }
 
-function Composer({ value, attachments, attachmentLimitExceeded, session, contextWindowUsage, models, onModelChange, onChange, onSend, onStop, onAddFiles, onAddFolder, onRemoveAttachment, running, starting, disabled }: { value: string; attachments: ComposerAttachment[]; attachmentLimitExceeded: boolean; session: Pick<SessionRecord, "model" | "modelProvider" | "reasoningEffort" | "serviceTier">; contextWindowUsage?: ContextWindowUsage | null; models: ModelOption[]; onModelChange: (model: ModelOption, reasoningEffort: string | null, serviceTier: string | null) => Promise<void>; onChange: (value: string) => void; onSend: () => void; onStop: () => void; onAddFiles: () => Promise<void>; onAddFolder: () => Promise<void>; onRemoveAttachment: (attachmentId: string) => void; running: boolean; starting: boolean; disabled: boolean }) {
+function Composer({ value, attachments, attachmentLimitExceeded, session, contextWindowUsage, models, onModelChange, onConnectProviders, onChange, onSend, onStop, onAddFiles, onAddFolder, onRemoveAttachment, running, starting, disabled }: { value: string; attachments: ComposerAttachment[]; attachmentLimitExceeded: boolean; session: Pick<SessionRecord, "model" | "modelProvider" | "reasoningEffort" | "serviceTier">; contextWindowUsage?: ContextWindowUsage | null; models: ModelOption[]; onModelChange: (model: ModelOption, reasoningEffort: string | null, serviceTier: string | null) => Promise<void>; onConnectProviders: () => void; onChange: (value: string) => void; onSend: () => void; onStop: () => void; onAddFiles: () => Promise<void>; onAddFolder: () => Promise<void>; onRemoveAttachment: (attachmentId: string) => void; running: boolean; starting: boolean; disabled: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const attachmentMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -1395,6 +1402,7 @@ function Composer({ value, attachments, attachmentLimitExceeded, session, contex
                 }
               }}
               onChange={onModelChange}
+              onConnectProviders={() => { setModelMenuOpen(false); onConnectProviders(); }}
             />
           </div>
         </div>

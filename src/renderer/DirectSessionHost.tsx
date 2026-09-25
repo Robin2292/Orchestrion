@@ -33,7 +33,11 @@ const message:Record<string,string>={
   DIRECT_VERSION_CHANGED:"The released version changed. Reload and choose again.",
   DIRECT_SESSION_INACTIVE:"This Session is inactive. Reload its lifecycle state.",
   DIRECT_SESSION_STATE_CONFLICT:"The Session state changed. Reload before trying again.",
-  DIRECT_PROVIDER_UNAVAILABLE:"The provider binding is unavailable. The Session was not deleted.",
+  DIRECT_PROVIDER_UNAVAILABLE:"This Direct Session is not ready for the experimental Codex text route. Check its released Agent, Tool grants, budget and connection.",
+  DIRECT_HARNESS_TEXT_UNKNOWN:"The model call outcome is uncertain. Its token reservation remains held; reload before taking another action.",
+  DIRECT_HARNESS_CANCELLED:"The text turn was interrupted. Reload to inspect its recorded state.",
+  DIRECT_CONTEXT_RETRY_REQUIRED:"Earlier text context was safely recovered. Reload, then send the same prompt again to continue in a new attempt.",
+  DIRECT_CONTEXT_PRESSURE_UNRESOLVED:"This Session has reached its text context limit. Its summary could not be completed.",
   REVISION_CONFLICT:"The Direct Session ledger changed. Reload before trying again.",
   NOT_AUTHENTICATED:"This window is no longer authorized. Reopen the app.",
   OUTCOME_UNKNOWN:"The host could not confirm the outcome. Reload before another action.",
@@ -43,9 +47,9 @@ export function directSessionError(error:unknown) {
   return message[code]??"Direct Session storage is unavailable. Reload the page.";
 }
 
-export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,onChanged}: {
+export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,onChanged,onConnectProviders}: {
   api:OrchestrionDesktopApi|undefined;projectId:string;projectName:string;sessionId:string|null;
-  onSelect:(id:string|null)=>void;onChanged:()=>Promise<void>;
+  onSelect:(id:string|null)=>void;onChanged:()=>Promise<void>;onConnectProviders?:()=>void;
 }) {
   const [detail,setDetail]=useState<Detail|null>(null);
   const [assignments,setAssignments]=useState<LocalAssignmentItem[]>([]);
@@ -56,6 +60,8 @@ export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,
   const [confirmDelete,setConfirmDelete]=useState(false);
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
+  const [prompt,setPrompt]=useState("");
+  const [history,setHistory]=useState<{seq:number;role:"user"|"assistant";text:string}[]>([]);
   const [error,setError]=useState<string|null>(null);
 
   const reload=useCallback(async()=>{
@@ -69,12 +75,16 @@ export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,
         if (value.kind!=="detail" || !value.session || value.session.projectId!==projectId || value.session.deleted)
           throw new Error("DIRECT_SESSION_UNAVAILABLE");
         setDetail(value);setExpected(value.expected);setTitle(value.session.title);
+        try {
+          const transcript=await api.localDirectSessions.request({operation:"history",sessionId});
+          setHistory(transcript.kind==="history"?transcript.items:[]);
+        } catch {setHistory([]);}
       } else {
         const [ledger,page]=await Promise.all([readProjectAssignments(api,projectId),readDirectSessions(api)]);
         if (page.items.some(item=>item.projectId!==projectId)) throw new Error("CONTEXT_MISMATCH");
         setAssignments(ledger.items.filter(item=>item.assignment.status==="active" &&
           item.migrationState==="governed" && item.currentVersion!==null));
-        setExpected(page.expected);setDetail(null);
+        setExpected(page.expected);setDetail(null);setHistory([]);
       }
     } catch(reason) { setDetail(null);setExpected(null);setError(directSessionError(reason)); }
     finally { setLoading(false); }
@@ -111,6 +121,21 @@ export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,
   };
 
   const session=detail?.session;
+  const sendTurn=async()=>{
+    if(!api||!session||!expected||busy||session.deleting||session.lifecycle!=="active"||!prompt.trim())return;
+    const submitted=prompt.trim();setBusy(true);setError(null);
+    try {
+      const result=await api.localDirectSessions.request({operation:"turn",expected,
+        requestId:crypto.randomUUID(),idempotencyKey:crypto.randomUUID(),
+        payload:{sessionId:session.id,prompt:submitted}});
+      if(result.kind!=="turn")throw new Error("SERVICE_UNAVAILABLE");
+      setExpected(result.expected);setPrompt("");
+      const transcript=await api.localDirectSessions.request({operation:"history",sessionId:session.id});
+      if(transcript.kind==="history")setHistory(transcript.items);
+      void onChanged().catch(()=>undefined);
+    } catch(reason) {setError(directSessionError(reason));}
+    finally {setBusy(false);}
+  };
   const selected=assignments.find(item=>item.assignment.id===assignmentId);
   return <section className="direct-workbench" aria-label="Direct Session workbench">
     <header className="direct-workbench-header">
@@ -118,6 +143,11 @@ export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,
         <p>{session ? "A Project bounded context with immutable Agent and Assignment pins." : "Choose a released Project Agent and name this bounded work context."}</p></div>
       <button type="button" className="button secondary-button" onClick={()=>onSelect(null)} disabled={!session}><Plus size={15}/> New Session</button>
     </header>
+    <section className="direct-model-route" aria-label="Direct Session model route">
+      <div><span className="eyebrow">Model for next Direct call</span><strong>Experimental Codex text · gpt-6-luna</strong>
+        <p>Requires a connected subscription, released text-only Codex Agent with no Tool grants, and Project budgets. The host checks every pin before calling it.</p></div>
+      <button type="button" className="button secondary-button" onClick={onConnectProviders} disabled={!onConnectProviders}><Plus size={15}/> Connect provider</button>
+    </section>
     {error && <div className="agent-inline-alert" role="alert"><AlertCircle size={16}/>{error}<button type="button" onClick={()=>void reload()}>Reload</button></div>}
     {loading ? <div className="agent-loading" role="status">Loading Direct Session…</div> : session ? <>
       <div className="direct-session-facts" aria-label="Session identity and lifecycle">
@@ -137,12 +167,26 @@ export function DirectSessionHost({api,projectId,projectName,sessionId,onSelect,
       <div className="direct-execution-controls" role="group" aria-labelledby="direct-execution-title" aria-describedby="direct-execution-reason">
         <strong id="direct-execution-title">Execution</strong>
         <div>{(["Start","Resume","Cancel","Retry"] as const).map(label=><button key={label} type="button" className="button secondary-button" disabled aria-disabled="true">{label}</button>)}</div>
-        <p id="direct-execution-reason">Trusted native execution binding is unavailable. The host cannot start, resume, cancel or retry this Direct Session from this build.</p>
+        <p id="direct-execution-reason">Full execution controls remain unavailable. Eligible Codex Agents can send text turns below; Tool calls are not enabled.</p>
       </div>
+      <section className="direct-text-chat" aria-label="Direct Agent text conversation">
+        <h2>Text conversation</h2>
+        {history.length ? history.map(item=><div key={item.seq} className="direct-text-message"><strong>{item.role==="user"?"You":"Agent"}</strong><p>{item.text}</p></div>)
+          : <p>No text turns yet.</p>}
+        <form onSubmit={event=>{event.preventDefault();void sendTurn();}}>
+          <label htmlFor="direct-text-prompt">Message</label>
+          <textarea id="direct-text-prompt" value={prompt} onChange={event=>setPrompt(event.target.value)}
+            maxLength={8192} rows={3} disabled={busy||session.deleting||session.lifecycle!=="active"}
+            placeholder="Ask this Agent a question"/>
+          <button type="submit" className="button primary-button"
+            disabled={busy||session.deleting||session.lifecycle!=="active"||!prompt.trim()}>
+            {busy?"Sending…":"Send text turn"}</button>
+        </form>
+      </section>
       {renaming && <form className="direct-inline-form" onSubmit={event=>{event.preventDefault();void command("rename");}}><label>Session name<input autoFocus maxLength={255} value={title} onChange={event=>setTitle(event.target.value)}/></label><button type="button" className="button secondary-button" onClick={()=>{setRenaming(false);setTitle(session.title);}}>Cancel</button><button type="submit" className="button primary-button" disabled={busy || !title.trim()}>Save</button></form>}
       {confirmDelete && <div className="agent-delete-confirm" role="group" aria-label="Confirm Direct Session deletion"><p>{session.deleting?"Ask the host to retry pending cleanup? The Session remains pending if provider cleanup is unavailable.":"Delete this Session and its stored context? This cannot be undone."}</p><button type="button" className="button secondary-button" onClick={()=>setConfirmDelete(false)}>Keep Session</button><button type="button" className="button danger-button" disabled={busy} onClick={()=>void command("delete")}>{session.deleting?"Retry cleanup":"Delete Session"}</button></div>}
       <div className="direct-surface-grid" aria-label="Session surfaces">
-        <section><Bot size={18}/><h2>Chat</h2><p>Conversation is read only until a trusted native execution binding is available. No attempt has been dispatched from this workbench.</p></section>
+        <section><Bot size={18}/><h2>Chat</h2><p>Text turns above use the Direct harness, its context checkpoint and ProviderCall ledger.</p></section>
         <section><FolderOpen size={18}/><h2>Files</h2><p>Session files will appear when a trusted workspace binding is available. Other Sessions remain isolated.</p></section>
         <section><ArrowLeft size={18}/><h2>Terminal</h2><p>The Terminal is unavailable until the host binds this Direct Session to a workspace.</p></section>
       </div>

@@ -169,7 +169,7 @@ describe("ORCLOCAL-106 direct Tool authoring",() => {
     await act(async () => save.click());
     expect(createVersion).toHaveBeenCalledOnce();
     expect(createVersion.mock.calls[0][0].payload.definition.toolGrants).toBeNull();
-    expect(createVersion.mock.calls[0][0].payload.sourceVersionId).toBe(version.id);
+    expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("sourceVersionId");
     expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("toolsetBindings");
   });
 
@@ -185,7 +185,7 @@ describe("ORCLOCAL-106 direct Tool authoring",() => {
     const save=[...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Save new version"))!;
     await act(async () => save.click());
     expect(createVersion.mock.calls[0][0].payload.definition.toolGrants).toEqual({ schema_version:"tool_grants@1",grants:[] });
-    expect(createVersion.mock.calls[0][0].payload.sourceVersionId).toBe(version.id);
+    expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("sourceVersionId");
     expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("toolsetBindings");
   });
 
@@ -213,7 +213,7 @@ describe("ORCLOCAL-106 direct Tool authoring",() => {
       tool:{ source:"files",key:"file.read" },execution_target:{ id:"project" },resource_scope:{ kind:"workspace_path",resource:"/workspace/team/report.md" },
     });
     expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("toolsetBindings");
-    expect(createVersion.mock.calls[0][0].payload.sourceVersionId).toBe(version.id);
+    expect(createVersion.mock.calls[0][0].payload).not.toHaveProperty("sourceVersionId");
     void dirty;
   });
 });

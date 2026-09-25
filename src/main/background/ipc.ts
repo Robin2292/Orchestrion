@@ -48,3 +48,4 @@ export function registerBackgroundIpc(host: BackgroundHost, documents: TrustedDo
   return () => { for (const channel of [...channels, documentChannel]) ipcMain.removeHandler(channel); host.off("event", publish); host.off("unavailable", unavailable); documents.dispose(); };
 }
 export const openSystemFile = (path: string) => shell.openPath(path);
+export const openOAuthBrowser = (url: string) => shell.openExternal(url);

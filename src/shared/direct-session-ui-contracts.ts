@@ -13,6 +13,9 @@ export const LocalDirectSessionRequestSchema=z.discriminatedUnion("operation",[
   z.object({operation:z.literal("archive"),...identity,payload:session}).strict(),
   z.object({operation:z.literal("restore"),...identity,payload:session}).strict(),
   z.object({operation:z.literal("delete"),...identity,payload:session}).strict(),
+  z.object({operation:z.literal("turn"),...identity,payload:session.extend({
+    prompt:z.string().trim().min(1).max(8192)}).strict()}).strict(),
+  z.object({operation:z.literal("history"),sessionId:LocalIdSchema}).strict(),
 ]);
 export type LocalDirectSessionRequest=z.infer<typeof LocalDirectSessionRequestSchema>;
 export const LocalDirectSessionItemSchema=z.object({
@@ -37,6 +40,12 @@ export const LocalDirectSessionValueSchema=z.discriminatedUnion("kind",[
   }).strict().nullable()}).strict(),
   z.object({kind:z.literal("command"),expected:LocalVersionPinSchema,
     resultRef:LocalIdSchema,replayed:z.boolean()}).strict(),
+  z.object({kind:z.literal("turn"),expected:LocalVersionPinSchema,attemptId:LocalIdSchema,
+    text:z.string().min(1).max(32768),costMicrousd:z.number().int().nonnegative(),
+    wouldHaveMicrousd:z.number().int().nonnegative(),replayed:z.boolean()}).strict(),
+  z.object({kind:z.literal("history"),items:z.array(z.object({
+    seq:z.number().int().positive(),role:z.enum(["user","assistant"]),text:z.string(),
+  }).strict()).max(100)}).strict(),
 ]);
 export type LocalDirectSessionValue=z.infer<typeof LocalDirectSessionValueSchema>;
 export const LocalDirectSessionErrorCodeSchema=z.union([LocalErrorCodeSchema,z.enum([
@@ -44,6 +53,8 @@ export const LocalDirectSessionErrorCodeSchema=z.union([LocalErrorCodeSchema,z.e
   "DIRECT_ASSIGNMENT_UNAVAILABLE","DIRECT_PRINCIPAL_UNAVAILABLE","DIRECT_VERSION_UNAVAILABLE",
   "DIRECT_VERSION_CHANGED","DIRECT_AUTHORITY_UNAVAILABLE","DIRECT_BUDGET_REVOKED",
   "DIRECT_PROVIDER_UNAVAILABLE","DIRECT_ATTEMPT_STATE_CONFLICT","DIRECT_PIN_REVOKED",
+  "DIRECT_HARNESS_TEXT_UNKNOWN","DIRECT_HARNESS_CANCELLED","DIRECT_CONTEXT_PRESSURE_UNRESOLVED",
+  "DIRECT_CONTEXT_CHECKPOINT_MISMATCH","DIRECT_CONTEXT_ORDER_INVALID",
 ])]);
 export const LocalDirectSessionReplySchema=z.union([
   z.object({ok:z.literal(true),value:LocalDirectSessionValueSchema}).strict(),

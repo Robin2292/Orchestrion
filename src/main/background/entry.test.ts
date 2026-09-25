@@ -67,9 +67,11 @@ describe("ORCLOCAL-81/82 production entry transport", () => {
     await import("./entry");
     await import("../../preload/index");
     const api = adapters.api!;
-    expect(await api.codexAccount({ operation: "read", projectId: "current-project" })).toEqual({ availability: "unavailable",
-      state: "unavailable", accountDisplay: null, executionReady: false });
     const initial = await api.localAgents.snapshot();
+    expect(await api.codexAccount({ operation: "read", projectId: initial.workspace.projectId })).toEqual({
+      availability: process.platform === "darwin" ? "available" : "unavailable",
+      state: process.platform === "darwin" ? "disconnected" : "unavailable",
+      accountDisplay: null, executionReady: false });
     expect(api.bridgeInfo).toMatchObject({ version:5,capabilities:{ localAgents:{ directToolGrants:true } } });
     expect(initial.workspace).toMatchObject({ schemaVersion:"orchestrion.local.agent.ui.v3" });
     const fixture = JSON.parse(readFileSync(new URL("../../fixtures/f1-agent-v1.json", import.meta.url), "utf8")).agentDetail.latestVersion;

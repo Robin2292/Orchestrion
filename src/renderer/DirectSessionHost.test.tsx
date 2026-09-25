@@ -28,7 +28,7 @@ describe("Direct Session workbench",()=>{
     expect(request).toHaveBeenCalledWith({operation:"list",limit:100,offset:0});
   });
 
-  it("shows exact Direct pins and performs only host supported lifecycle actions",async()=>{
+  it("shows exact Direct pins, the bounded text route and host lifecycle actions",async()=>{
     let lifecycle:"active"|"archived"="active";
     const request=vi.fn(async(input:{operation:string})=>{
       if(input.operation==="get") return {kind:"detail",expected:pin,session:{...session,lifecycle}};
@@ -36,13 +36,17 @@ describe("Direct Session workbench",()=>{
       throw new Error("UNEXPECTED_OPERATION");
     });
     const api={localDirectSessions:{request},localAssignments:{request:vi.fn()}} as unknown as OrchestrionDesktopApi;
+    const onConnectProviders=vi.fn();
     const node=document.createElement("div");document.body.append(node);root=createRoot(node);
-    await act(async()=>{root?.render(<DirectSessionHost api={api} projectId={projectId} projectName="Atlas" sessionId={sessionId} onSelect={vi.fn()} onChanged={vi.fn(async()=>undefined)}/>);await Promise.resolve();});
+    await act(async()=>{root?.render(<DirectSessionHost api={api} projectId={projectId} projectName="Atlas" sessionId={sessionId} onSelect={vi.fn()} onChanged={vi.fn(async()=>undefined)} onConnectProviders={onConnectProviders}/>);await Promise.resolve();});
     expect(node.textContent).toContain("Direct · released");
     expect(node.textContent).toContain("Atlas");
     expect(node.textContent).toContain(session.agentVersionId);
     expect(node.textContent).toContain(session.assignmentVersionId);
-    expect(node.textContent).toContain("Trusted native execution binding is unavailable");
+    expect(node.textContent).toContain("Full execution controls remain unavailable");
+    expect(node.textContent).toContain("Experimental Codex text · gpt-6-luna");
+    await act(async()=>node.querySelector<HTMLButtonElement>(".direct-model-route button")!.click());
+    expect(onConnectProviders).toHaveBeenCalledOnce();
     expect([...node.querySelectorAll("button")].filter(button=>["Start","Resume","Cancel","Retry"].includes(button.textContent??""))
       .every(button=>button.disabled)).toBe(true);
     const archive=[...node.querySelectorAll("button")].find(button=>button.textContent?.includes("Archive"))!;
@@ -82,6 +86,33 @@ describe("Direct Session workbench",()=>{
     expect(node.querySelector("[role='alert']")).toBeNull();
   });
 
+  it("shows durable history after a confirmed text turn without accepting provider fields from UI",async()=>{
+    let items:{seq:number;role:"user"|"assistant";text:string}[]=[];
+    const request=vi.fn(async(input:{operation:string;payload?:{prompt:string}})=>{
+      if(input.operation==="get")return {kind:"detail",expected:pin,session};
+      if(input.operation==="history")return {kind:"history",items};
+      if(input.operation==="turn") {
+        items=[{seq:1,role:"user",text:input.payload!.prompt},{seq:2,role:"assistant",text:"Reply"}];
+        return {kind:"turn",expected:pin,attemptId:"attempt",text:"Reply",
+          costMicrousd:0,wouldHaveMicrousd:0,replayed:false};
+      }
+      throw Error("UNEXPECTED_OPERATION");
+    });
+    const api={localDirectSessions:{request},localAssignments:{request:vi.fn()}} as unknown as OrchestrionDesktopApi;
+    const node=document.createElement("div");document.body.append(node);root=createRoot(node);
+    await act(async()=>{root?.render(<DirectSessionHost api={api} projectId={projectId} projectName="Atlas"
+      sessionId={sessionId} onSelect={vi.fn()} onChanged={vi.fn(async()=>undefined)}/>);await Promise.resolve();});
+    const area=node.querySelector<HTMLTextAreaElement>("#direct-text-prompt")!;
+    await act(async()=>{
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")?.set?.call(area,"Question");
+      area.dispatchEvent(new Event("input",{bubbles:true}));
+    });
+    await act(async()=>{node.querySelector<HTMLButtonElement>(".direct-text-chat [type='submit']")!.click();await Promise.resolve();});
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({operation:"turn",
+      payload:{sessionId,prompt:"Question"}}));
+    expect(node.textContent).toContain("Reply");
+  });
+
   it("labels pending deletion and retries only through host cleanup",async()=>{
     let cleanupAvailable=false;
     const request=vi.fn(async(input:{operation:string})=>{
@@ -103,7 +134,7 @@ describe("Direct Session workbench",()=>{
     await act(async()=>{[...node.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent?.includes("Retry cleanup"))!.click();await Promise.resolve();});
     expect(request).toHaveBeenCalledWith(expect.objectContaining({operation:"delete",payload:{sessionId}}));
     expect(node.textContent).toContain("Deletion pending");
-    expect(node.textContent).toContain("provider binding is unavailable");
+    expect(node.textContent).toContain("not ready for the experimental Codex text route");
     cleanupAvailable=true;
     await act(async()=>[...node.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent?.includes("Retry deletion"))!.click());
     await act(async()=>{[...node.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent?.includes("Retry cleanup"))!.click();await Promise.resolve();});

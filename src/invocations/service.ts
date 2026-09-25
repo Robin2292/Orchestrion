@@ -19,6 +19,10 @@ import { AgentRepository } from "../agents/repository";
 import { SqliteFoundation, StorageError, type SqliteUnit } from "../storage/sqlite/foundation";
 import { InvocationRepository, INVOCATION_FENCE } from "./repository";
 import { immutable, planHash, validateArguments } from "./planning";
+import type { LocalSourcePublicationService, PublishedSourcePolicyPreflight } from "../sources/service";
+import { httpEndpointResource } from "../sources/declarative-http";
+import { ConnectorHttpError } from "../connectors/http-transport";
+import type { Json } from "../shared/policy/p0-canonical";
 
 /** Must authenticate the live host session and read authoritative target,
  * placement and connection state. No request DTO is forwarded to the resolver.
@@ -27,6 +31,8 @@ import { immutable, planHash, validateArguments } from "./planning";
 export type InvocationHostResolver = (tx: SqliteUnit, context: LocalContext) => unknown;
 export interface ToolInvocationOptions {
   store: SqliteFoundation; context: LocalContext; policy: LocalPolicyService; resolve: InvocationHostResolver;
+  publishedHttp?: { source:LocalSourcePublicationService; policy:LocalPolicyService;
+    sourceId:string; key:string; endpoint:string };
 }
 type PlanningBinding = (definition: ToolDefinition) => { review: ToolPlanningReview;
   plan(input: ToolPlannerInput): ReturnType<typeof ToolPlannerOutputSchema.parse>; adapter: ToolImplementation["adapter"] };
@@ -75,22 +81,25 @@ export class LocalToolInvocationService {
   #resolve: InvocationHostResolver;
   #registry: ToolRegistry;
   #planning: PlanningBinding;
+  #publishedHttp: ToolInvocationOptions["publishedHttp"];
   /** Plans this exact service instance admitted, and the subset already executed.
    * A loaded, forged or replayed plan is never executable; a prepared plan runs
    * at most once. Nothing here survives a host restart. */
   #prepared = new WeakSet<ToolInvocationPlan>();
   #executed = new WeakSet<ToolInvocationPlan>();
-  #directRequests = new WeakMap<ToolInvocationPlan, { header: LocalCommandHeader; request: ToolInvocationRequest }>();
+  #directRequests = new WeakMap<ToolInvocationPlan, { header: LocalCommandHeader; request: ToolInvocationRequest;
+    kind:"workspace"|"http" }>();
   constructor(options: ToolInvocationOptions, registry: ToolRegistry, planning: PlanningBinding) {
     this.#context = parse(LocalContextSchema, options.context);
     this.#store = options.store; this.#policy = options.policy; this.#resolve = options.resolve;
+    this.#publishedHttp=options.publishedHttp;
     this.#registry = registry; this.#planning = planning;
     if (toolJson(this.#policy.context) !== toolJson(this.#context)) throw new StorageError("CONTEXT_MISMATCH");
     this.read((tx) => new InvocationRepository(tx, this.#context).ensureFence());
   }
   get context() { return structuredClone(this.#context); }
   private read<T>(work: (tx: SqliteUnit) => T): T { return this.#store.transaction((tx) => safe(() => work(tx))); }
-  private host(tx: SqliteUnit) {
+  private host(tx: SqliteUnit, publishedHttp=false) {
     let host;
     try { host = parse(InvocationHostProofSchema, this.#resolve(tx, this.context)); }
     catch { throw new StorageError("TOOL_INVOCATION_AUTHORITY_UNAVAILABLE"); }
@@ -106,13 +115,22 @@ export class LocalToolInvocationService {
     }
     if (host.connection.status !== "active") throw new StorageError("TOOL_CONNECTION_NOT_READY");
     const connectors = new ConnectorRepository(tx, this.#context); connectors.authorize();
-    try {
-      connectors.get(host.connection.connectorId);
-      // C0 connector records are configuration only. A host claim must never
-      // promote one into executable authority.
-      throw new StorageError("TOOL_CONNECTION_NOT_READY");
-    } catch (error) {
-      if (!(error instanceof StorageError) || error.code !== "CONNECTOR_NOT_FOUND") throw error;
+    if (publishedHttp) {
+      const row=connectors.get(host.connection.connectorId);
+      const credential=row.auth.mode==="static" ? row.auth.credential : null;
+      if (row.deletedAt || row.revision!==host.connection.revision
+        || host.connection.connectionId!==row.id
+        || toolJson(host.connection.credential)!==toolJson(credential))
+        throw new StorageError("TOOL_CONNECTION_NOT_READY");
+    } else {
+      try {
+        connectors.get(host.connection.connectorId);
+        // C0 connector records are configuration only. A host claim must never
+        // promote one into executable authority.
+        throw new StorageError("TOOL_CONNECTION_NOT_READY");
+      } catch (error) {
+        if (!(error instanceof StorageError) || error.code !== "CONNECTOR_NOT_FOUND") throw error;
+      }
     }
     if (host.connection.credential) {
       try {
@@ -125,7 +143,7 @@ export class LocalToolInvocationService {
   }
   authority() {
     return this.read((tx) => {
-      const r = new InvocationRepository(tx, this.#context), host = this.host(tx);
+      const r = new InvocationRepository(tx, this.#context), host = this.host(tx,!!this.#publishedHttp);
       return { context: this.context, runtime_owner: this.#store.owner, expected: r.pin(), run: host.run };
     });
   }
@@ -224,7 +242,92 @@ export class LocalToolInvocationService {
     }));
     if (receipt.resultRef !== plan.hash) throw new StorageError("REVISION_CONFLICT");
     this.#prepared.add(plan);
-    this.#directRequests.set(plan, { header: h, request });
+    this.#directRequests.set(plan, { header: h, request, kind:"workspace" });
+    return plan;
+  }
+  private httpPreflight():PublishedSourcePolicyPreflight {
+    const binding=this.#publishedHttp;
+    if (!binding) throw new StorageError("SOURCE_ADAPTER_NOT_READY");
+    const preflight=binding.source.preparePolicyContract(binding.sourceId,binding.key);
+    binding.policy.preparePublishedSource();
+    return preflight;
+  }
+  private buildPublishedHttp(tx:SqliteUnit,h:LocalCommandHeader,request:ToolInvocationRequest,
+    preflight:PublishedSourcePolicyPreflight):ToolInvocationPlan {
+    const binding=this.#publishedHttp!;
+    const host=this.host(tx,true);
+    const valid=command.validate(toolJson({...h,command:"tool.prepare",payload:request}),{
+      context:this.context,runtime_owner:this.#store.owner,expected:h.expected,run:host.run });
+    if (!valid.ok) throw new StorageError(valid.error.code);
+    if (host.target.layer!=="agent" || host.connection.connectorId!==binding.sourceId
+      || host.connection.connectionId!==binding.sourceId || request.connectorId!==binding.sourceId
+      || request.connectionId!==binding.sourceId || host.placement.kind!=="local_trusted"
+      || !("binding" in host.placement)) throw new StorageError("TOOL_INVOCATION_AUTHORITY_UNAVAILABLE");
+    const source=binding.source.revalidatePolicyContract(tx,preflight);
+    const resource=httpEndpointResource(binding.endpoint);
+    if (source.adapterKind!=="declarative_http_get" || source.httpEndpointResource!==resource
+      || toolJson(source.anchor)!==toolJson(request.anchor)) throw new StorageError("SOURCE_DRIFT");
+    const definition=this.#registry.get(this.context,binding.sourceId,binding.sourceId,binding.key);
+    if (!definition || definition.sourceId!==binding.sourceId || definition.implementationId!=="declarative-http-get-v1"
+      || definition.implementationVersion!==source.contractId || toolJson(definition.parameters)!==toolJson(preflight.candidate.tools[0]?.inputSchema))
+      throw new StorageError("TOOL_IMPLEMENTATION_MISSING");
+    const planning=this.#planning(definition);
+    if (planning.review.effect!=="read_only" || planning.review.resourceKind!=="http_endpoint")
+      throw new StorageError("TOOL_PROTECTED_NOT_READY");
+    validateArguments(definition.parameters,request.arguments);
+    const prepared=planning.plan({arguments:request.arguments,scope:{http_endpoint:resource}});
+    validateArguments(definition.parameters,prepared.arguments);
+    if (toolJson(prepared.arguments)!==toolJson(request.arguments)
+      || toolJson(prepared.claims)!==toolJson([{type:"http_endpoint",value:resource,mode:"read"}]))
+      throw new StorageError("TOOL_RESOURCE_NOT_READY");
+    const admitted=binding.policy.revalidatePublishedSource(tx,host.target,request.policy,prepared.claims,{
+      sourceId:source.sourceId,releaseId:source.sourceReleaseId,contractId:source.contractId,
+      contractHash:source.contractHash,schemaHash:source.schemaHash });
+    if (admitted.decision.outcome!=="allow" || !admitted.source
+      || admitted.source.sourceActivationRevision!==source.sourceActivationRevision)
+      throw new StorageError("TOOL_POLICY_DENIED");
+    const floor=admitted.ancestors.find(p=>p.target.layer==="organization");
+    if (!floor) throw new StorageError("TOOL_POLICY_DENIED");
+    const connector=new ConnectorRepository(tx,this.#context).get(binding.sourceId);
+    const connectionHash=grantDigest({id:connector.id,config:connector.config,auth:connector.auth});
+    const grants=new ToolGrantRepository(tx,this.#context).agent(host.target.agentId,host.target.versionId);
+    if (!grants) throw new StorageError("TOOL_INVOCATION_AUTHORITY_UNAVAILABLE");
+    const matching=grants.grants.filter(grant=>grant.tool.source===binding.sourceId && grant.tool.key===binding.key
+      && grant.contract.id===source.contractId && grant.contract.hash===source.contractHash
+      && grant.connection?.kind==="local_connector" && grant.connection.id===binding.sourceId
+      && grant.connection.authority_hash===connectionHash && grant.execution_target===null
+      && grant.resource_scope.kind==="http_endpoint" && grant.resource_scope.resource===resource
+      && toolJson(grant.constraints.effects)===toolJson(["read"])
+      && grant.constraints.argument_schema_hash===source.schemaHash
+      && grant.constraints.max_output_bytes<=262144 && grant.constraints.max_runtime_seconds<=30
+      && grant.policy.id===floor.id && grant.policy.hash===floor.releaseHash && grant.approval===null);
+    if (matching.length!==1) throw new StorageError("TOOL_INVOCATION_AUTHORITY_UNAVAILABLE");
+    const grant=matching[0];
+    const material={schemaVersion:"orchestrion.local.tool-plan.v2" as const,authority:"direct_tool_grants@1" as const,
+      context:this.context,target:host.target,targetPin:host.targetPin,run:host.run,connection:host.connection,
+      placement:host.placement,anchor:source.anchor,review:planning.review,
+      policies:[...admitted.ancestors,{...request.policy,target:host.target,anchor:source.anchor}],
+      arguments:prepared.arguments,claims:prepared.claims,scope:admitted.decision.effective_scope,
+      directGrantHash:grantDigest(grantMaterial(grant)),directGrantLimits:{maxOutputBytes:grant.constraints.max_output_bytes,
+        maxRuntimeSeconds:grant.constraints.max_runtime_seconds},
+      sourceRuntimePin:{releaseId:source.sourceReleaseId,activationRevision:source.sourceActivationRevision}};
+    return immutable(parse(ToolInvocationPlanSchema,{...material,hash:planHash(material)}));
+  }
+  /** Host-only T2 admission for one reviewed static GET Source. */
+  preparePublishedHttp(header:LocalCommandHeader,raw:unknown):ToolInvocationPlan {
+    const h=parse(LocalCommandHeaderSchema,header),request=parse(ToolInvocationRequestSchema,raw);
+    const before=this.httpPreflight();
+    const plan=this.read(tx=>this.buildPublishedHttp(tx,h,request,before));
+    const finalPreflight=this.httpPreflight();
+    const receipt=this.#store.commit({trustedContext:this.context,header:h,command:"tool.prepare",
+      resourceKey:INVOCATION_FENCE,canonicalContent:toolJson(request),nextHash:plan.hash},tx=>safe(()=>{
+      const final=this.buildPublishedHttp(tx,h,request,finalPreflight);
+      if (toolJson(final)!==toolJson(plan)) throw new StorageError("TOOL_PLAN_NONDETERMINISTIC");
+      return final.hash;
+    }));
+    if (receipt.resultRef!==plan.hash) throw new StorageError("REVISION_CONFLICT");
+    this.#prepared.add(plan);
+    this.#directRequests.set(plan,{header:h,request,kind:"http"});
     return plan;
   }
   /** The only route to a registered adapter. `plan` must be the frozen object this
@@ -234,8 +337,16 @@ export class LocalToolInvocationService {
    * WorkspaceAuthority) through `run`; no credential, SQL unit or host object is
    * injected here. Direct plans recheck pinned and live organization Policy
    * immediately before dispatch; callers treat the result as data, never a grant. */
-  execute<R>(plan: ToolInvocationPlan, run: (adapter: ToolImplementation["adapter"], plan: ToolInvocationPlan) => R): R {
+  execute<R>(plan: ToolInvocationPlan, run: (adapter: ToolImplementation["adapter"], plan: ToolInvocationPlan,
+    beforeDispatch:()=>void) => R): R {
+    return this.executePrepared(plan,run,false);
+  }
+  private executePrepared<R>(plan: ToolInvocationPlan,
+    run: (adapter: ToolImplementation["adapter"], plan: ToolInvocationPlan, beforeDispatch:()=>void) => R,
+    allowPublishedHttp:boolean):R {
     if (!this.#prepared.has(plan)) throw new StorageError("TOOL_PLAN_INVALID");
+    if (plan.review.resourceKind==="http_endpoint" && !allowPublishedHttp)
+      throw new StorageError("TOOL_PLAN_INVALID");
     if (this.#executed.has(plan)) throw new StorageError("TOOL_CALL_DUPLICATE");
     const { hash, ...material } = plan;
     if (toolJson(this.context) !== toolJson(plan.context) || planHash(material) !== hash) throw new StorageError("TOOL_PLAN_INVALID");
@@ -244,14 +355,38 @@ export class LocalToolInvocationService {
     if (plan.review.effect !== "read_only" || plan.claims.some((c) => c.mode !== "read")) throw new StorageError("TOOL_PROTECTED_NOT_READY");
     const definition = safe(() => this.#registry.get(this.context, plan.connection.connectorId, plan.connection.connectionId, plan.anchor.tool_name));
     if (!definition) throw new StorageError("TOOL_IMPLEMENTATION_MISSING");
-    if (toolJson(toolAnchor(definition)) !== toolJson(plan.anchor)) throw new StorageError("TOOL_SCHEMA_DRIFT");
+    if (plan.review.resourceKind!=="http_endpoint" && toolJson(toolAnchor(definition)) !== toolJson(plan.anchor))
+      throw new StorageError("TOOL_SCHEMA_DRIFT");
     const binding = safe(() => this.#planning(definition));
     if (toolJson(binding.review) !== toolJson(plan.review)) throw new StorageError("TOOL_SCHEMA_DRIFT");
     const input = this.#directRequests.get(plan);
     if (!input) throw new StorageError("TOOL_PLAN_INVALID");
-    const current = this.read((tx) => this.buildDirect(tx, input.header, input.request));
-    if (toolJson(current) !== toolJson(plan)) throw new StorageError("TOOL_CALL_READINESS_LOST");
+    const checked=()=>{
+      const preflight=input.kind==="http" ? this.httpPreflight() : null;
+      const current=this.read(tx=>preflight
+        ? this.buildPublishedHttp(tx,input.header,input.request,preflight)
+        : this.buildDirect(tx,input.header,input.request));
+      if (toolJson(current)!==toolJson(plan)) throw new StorageError("TOOL_CALL_READINESS_LOST");
+    };
+    checked();
     this.#executed.add(plan);
-    return run(binding.adapter, plan);
+    return run(binding.adapter, plan, checked);
+  }
+  /** A single in-process attempt. C1 validates DNS/TLS and invokes the supplied
+   * T2 recheck immediately before GET dispatch; redirects are never followed. */
+  async executePublishedHttp(plan:ToolInvocationPlan,signal?:AbortSignal):Promise<Json> {
+    if (plan.review.resourceKind!=="http_endpoint" || !plan.directGrantLimits)
+      throw new StorageError("TOOL_PLAN_INVALID");
+    if (signal?.aborted) throw new ConnectorHttpError("CONNECTOR_HTTP_TIMEOUT");
+    const controller=new AbortController();
+    const abort=()=>controller.abort();signal?.addEventListener("abort",abort,{once:true});
+    if (signal?.aborted) controller.abort();
+    const timer=setTimeout(abort,Math.min(plan.directGrantLimits.maxRuntimeSeconds*1000,30000));
+    try {
+      const result=this.executePrepared(plan,(adapter,_admitted,beforeDispatch)=>
+        (adapter as unknown as (maxBytes:number,check:()=>void,signal:AbortSignal)=>Promise<Json>)(
+          plan.directGrantLimits!.maxOutputBytes,beforeDispatch,controller.signal),true);
+      return result.finally(()=>{clearTimeout(timer);signal?.removeEventListener("abort",abort);});
+    } catch (error) {clearTimeout(timer);signal?.removeEventListener("abort",abort);throw error;}
   }
 }

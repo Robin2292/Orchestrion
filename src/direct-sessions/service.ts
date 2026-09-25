@@ -343,6 +343,19 @@ export class DirectSessionService {
           costUsd:facts.contract.budgetCeilings.costUsd!}});
     });
   }
+  /** A stale owner may read or apply a settled result, but it cannot dispatch.
+   * Check the exact persisted attempt and current authority before recovery. */
+  assertStaleReplayOwner(sessionId:string,attemptId:string,binding:DirectExecutionBinding):void {
+    this.withProviderAttempt(sessionId,attemptId,binding,"replay",tx=>{
+      const attempt=tx.get(`SELECT outcome,runtime_owner_json FROM agent_session_attempts
+        WHERE org_id=? AND session_id=? AND id=?`,this.context.org_id,sessionId,attemptId);
+      const owner=JSON.stringify({engine:"local",instanceId:this.store.owner.instance_id,
+        epoch:this.store.owner.epoch});
+      if(!attempt||!["running","waiting"].includes(String(attempt.outcome))
+        ||attempt.runtime_owner_json===owner)
+        throw new StorageError("DIRECT_BINDING_UNAVAILABLE");
+    });
+  }
   /** Called immediately before model dispatch or context injection. */
   assertDispatch(sessionId:string,attemptId:string,binding:DirectExecutionBinding,
     memory:readonly unknown[]=[]) {
@@ -380,6 +393,50 @@ export class DirectSessionService {
       if (a.workspace_binding_id!==proof.workspaceBindingId
         || a.provider_execution_ref!==proof.providerExecutionRef
         || !this.verifyStopped(this.context,s,a,proof)) throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");
+      r.outcome(sessionId,attemptId,a.outcome,"cancelled");return attemptId;
+    });
+  }
+  /** Close a stale text-only attempt after its sole physical call was a
+   * settled, applied compaction. Exclusive SQLite ownership proves the prior
+   * host can no longer write; the full call inventory proves no further model
+   * request was in flight or accepted. A new user command must create a fresh
+   * fenced attempt to continue the pending text turn. */
+  recoverAppliedTextCompaction(header:LocalCommandHeader,sessionId:string,attemptId:string,
+    binding:DirectExecutionBinding,providerCallId:string) {
+    sessionId=LocalIdSchema.parse(sessionId);attemptId=LocalIdSchema.parse(attemptId);
+    providerCallId=LocalIdSchema.parse(providerCallId);
+    return this.mutate(header,"direct.attempt.recover_compaction",
+      {sessionId,attemptId,binding,providerCallId},(r,tx)=>{
+      const s=this.live(r,sessionId),a=r.attempt(sessionId,attemptId);
+      if(!a||!["running","waiting"].includes(a.outcome))
+        throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");
+      const {authorityHash}=this.admitted(r,s);
+      const owner=JSON.stringify({engine:"local",instanceId:this.store.owner.instance_id,
+        epoch:this.store.owner.epoch});
+      if(a.runtime_owner_json===owner||a.effective_authority_hash!==authorityHash
+        ||a.resolved_config_hash!==s.resolved_config_hash
+        ||binding.placementBindingId!=="local_trusted"
+        ||!/^text-[0-9a-f]{32}$/.test(binding.workspaceBindingId)
+        ||binding.sourceRevision!==s.agent_version_id||binding.providerExecutionRef!==null
+        ||a.execution_placement_binding_id!==binding.placementBindingId
+        ||a.workspace_binding_id!==binding.workspaceBindingId
+        ||a.source_revision_or_snapshot!==binding.sourceRevision
+        ||a.fencing_token!==binding.fencingToken||a.provider_execution_ref!==null)
+        throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");
+      const calls=tx.all(`SELECT id,logical_slot,lifecycle,result_state,continuation_json
+        FROM direct_provider_calls WHERE org_id=? AND session_id=? AND attempt_id=?`,
+        this.context.org_id,sessionId,attemptId);
+      if(calls.length!==1||calls[0].id!==providerCallId
+        ||!/^context:(0|[1-9]\d*):([1-9]\d*)$/.test(String(calls[0].logical_slot))
+        ||calls[0].lifecycle!=="settled"||calls[0].result_state!=="applied")
+        throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");
+      let continuation:{kind?:string;providerCallId?:string};
+      try {continuation=JSON.parse(String(calls[0].continuation_json));}
+      catch {throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");}
+      if(continuation.kind!=="context_compaction"||continuation.providerCallId!==providerCallId
+        ||!tx.get(`SELECT 1 FROM direct_context_epochs WHERE org_id=? AND project_id=?
+          AND session_id=? AND provider_call_id=?`,this.context.org_id,this.context.project_id,
+          sessionId,providerCallId))throw new StorageError("DIRECT_RECOVERY_UNAVAILABLE");
       r.outcome(sessionId,attemptId,a.outcome,"cancelled");return attemptId;
     });
   }

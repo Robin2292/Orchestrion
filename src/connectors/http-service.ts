@@ -8,7 +8,7 @@ import { LOCAL_CONTRACT_VERSION, type LocalContext } from "../shared/local-contr
 import { ConnectorPinSchema, type LocalConnector } from "../shared/connector-contracts";
 import { ConnectorCandidateSchema, ConnectorDisconnectSchema, ConnectorHttpProjectionSchema, type ConnectorHttpProjection, type ConnectorHttpCode } from "../shared/connector-http-contracts";
 import type { CredentialRequest } from "../shared/credential-contracts";
-import { canonical } from "../shared/policy/p0-canonical";
+import { canonical, type Json } from "../shared/policy/p0-canonical";
 import { JobEventBus } from "../jobs/event-bus";
 import { ConnectorHttpError, HostHttpTransport, endpointUrl, requireJson, type HttpResponse } from "./http-transport";
 
@@ -19,7 +19,7 @@ const bearer = secret.regex(/^[a-zA-Z0-9._~+/-]+=*$/);
 const oauthSchema = z.object({ clientId:z.string().min(1).max(256), authorizeUrl:z.string(),tokenUrl:z.string(),
   revokeUrl:z.string().nullable(),redirectUri:z.string(),scopes:z.array(z.string().regex(/^[a-zA-Z0-9:._/-]{1,128}$/)).max(32) }).strict();
 const profileSchema = z.object({ endpoint:z.string(),allowedEndpoints:z.array(z.string()).min(1).max(32),
-  oauth:oauthSchema.nullable() }).strict();
+  oauth:oauthSchema.nullable(),readonlyGetEndpoints:z.array(z.string()).max(8).optional() }).strict();
 export type ConnectorHttpProfile = z.infer<typeof profileSchema>;
 const tokenSchema = z.object({ kind:z.literal("oauth-pkce.v2"),profile:z.string(),access:secret,refresh:secret.nullable(),
   expires:z.number().finite(),scopes:z.array(z.string()),redaction:RedactionSchema }).strict();
@@ -149,6 +149,59 @@ export class HostConnectorHttpService {
       return !!slot && slot.projection?.status==="candidate" && slot.fingerprint===a.fingerprint
         && this.now()-slot.verified < this.freshMs && this.now() < slot.credentialExpires;
     } catch { return false; }
+  }
+  /** Host-installed reviewed GET list, separate from MCP discovery readiness. */
+  reviewedGetForConnector(row:LocalConnector,endpoint:string):boolean {
+    try {
+      const a=this.admissionForRow({id:row.id,revision:row.revision},row);
+      return !!a.profile.readonlyGetEndpoints?.includes(endpoint)
+        && a.profile.allowedEndpoints.includes(endpoint) && row.config.transport==="http"
+        && row.config.url===endpoint;
+    } catch { return false; }
+  }
+  /** Static GET only. The caller rechecks Source, grant and Policy synchronously
+   * after C1 DNS validation and before its pinned TLS request. */
+  async readOnlyGet(pin:Pin,endpoint:string,maxBytes:number,beforeDispatch:()=>void,signal:AbortSignal):Promise<Json> {
+    const a=this.admission(pin);
+    if (!this.reviewedGetForConnector(a.row,endpoint)) throw new ConnectorHttpError("CONNECTOR_HTTP_DENIED");
+    let bytes:Buffer|null=null,access:string|null=null,redaction:Redaction|null=null;
+    try {
+      bytes=this.consume(a.row);
+      if (a.row.auth.mode==="static") {
+        if (!bytes) throw authError();
+        if (a.profile.oauth) {
+          const token=this.decode(bytes,a.profile);
+          if (token.expires<=this.now()) throw authError();
+          access=token.access;redaction=token.redaction;
+        } else { access=bearer.parse(bytes.toString());redaction=extendRedaction(null,"credential",[access]); }
+      }
+      const matcher=redaction ? new RedactionMatcher(redaction) : null;
+      const result=await this.http.get(endpoint,[endpoint],access,signal,maxBytes,()=>{
+        this.checked(pin,a.fingerprint);
+        // F5's Keychain marker can advance before its SQLite metadata during a
+        // partial retire. Re-consume after DNS so copied bearer bytes cannot
+        // outlive their marker or an OAuth token's expiry at dispatch time.
+        if (a.row.auth.mode==="static") {
+          const fresh=this.consume(a.row);
+          try {
+            if (!bytes || !fresh || bytes.length!==fresh.length || !timingSafeEqual(bytes,fresh)) throw authError();
+            if (a.profile.oauth && this.decode(fresh,a.profile).expires<=this.now()) throw authError();
+          } finally { fresh?.fill(0); }
+        }
+        beforeDispatch();
+      });
+      matcher?.inspect(result.headers); matcher?.inspect(result.body);
+      let json:Json;
+      try { json=JSON.parse(result.body,(_key,value:unknown)=>{
+          if (typeof value==="number" && !Number.isFinite(value)) throw new Error();
+          return value;
+        }) as Json;
+        if (Buffer.byteLength(JSON.stringify(json))>maxBytes) throw new Error(); }
+      catch { throw new ConnectorHttpError("CONNECTOR_HTTP_FAILED"); }
+      matcher?.inspect(json);
+      this.checked(pin,a.fingerprint);
+      return json;
+    } finally { bytes?.fill(0);access=null;redaction=null; }
   }
   private async operation(raw: unknown,work: (a: ReturnType<HostConnectorHttpService["admission"]>, signal: AbortSignal,check: () => void) => Promise<ConnectorHttpProjection>) {
     let slot: Slot | undefined, generation = -1;

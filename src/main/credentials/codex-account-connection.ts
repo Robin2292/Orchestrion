@@ -4,6 +4,8 @@ import { CodexAccountRepository } from "../../storage/sqlite/codex-account";
 import type { CredentialRequest, CredentialResult } from "../../shared/credential-contracts";
 import type { HostCredentialService } from "./service";
 import type { HostCodexOAuthCeremony, HostOAuthBinding } from "./codex-oauth-ceremony";
+import { CODEX_MAX_TOKEN_LIFETIME_SECONDS } from "./codex-oauth-limits";
+import type { CodexConnectionDiagnosticReason, CodexOAuthDiagnostic } from "./codex-oauth-diagnostics";
 
 export interface HostCodexRefreshPort {
   /** Explicit host gate. A reviewed OAuth registration and trusted account verifier
@@ -21,7 +23,6 @@ const same = (a: HostOAuthBinding, b: HostOAuthBinding | null): boolean =>
   !!b && a.orgId === b.orgId && a.principalId === b.principalId &&
   a.projectId === b.projectId && a.connectorId === b.connectorId &&
   a.windowId === b.windowId && a.sessionId === b.sessionId && a.accountId === b.accountId;
-const MAX_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 const MAX_REFRESH_MARGIN_MS = 60_000;
 type Expiry = { issuedAtMs: number; expiresAtMs: number; refreshAfterMs: number };
 type StoredCodexSecret = Expiry & { kind: "codex-oauth.v1"; accessToken: string;
@@ -37,7 +38,8 @@ export class CodexAccountConnection {
   constructor(private readonly store: SqliteFoundation, private readonly credentials: HostCredentialService,
     private readonly connectorId: string, private readonly readBinding: () => HostOAuthBinding | null,
     private readonly readVerifiedAccount: () => string | null,
-    private readonly now: () => number = Date.now) {}
+    private readonly now: () => number = Date.now,
+    private readonly reportFailure?: (diagnostic: CodexOAuthDiagnostic) => void) {}
 
   private clock(): number {
     const now = this.now();
@@ -46,7 +48,7 @@ export class CodexAccountConnection {
   }
   private expiry(expiresIn: number | undefined): Expiry {
     if (!Number.isSafeInteger(expiresIn) || !expiresIn || expiresIn < 1
-        || expiresIn > MAX_TOKEN_LIFETIME_SECONDS) throw new Error("CREDENTIAL_UNAVAILABLE");
+        || expiresIn > CODEX_MAX_TOKEN_LIFETIME_SECONDS) throw new Error("CREDENTIAL_UNAVAILABLE");
     const issuedAtMs = this.clock(), lifetime = expiresIn * 1000;
     const expiresAtMs = issuedAtMs + lifetime;
     if (!Number.isSafeInteger(expiresAtMs)) throw new Error("CREDENTIAL_UNAVAILABLE");
@@ -65,7 +67,7 @@ export class CodexAccountConnection {
       throw new Error("CREDENTIAL_UNAVAILABLE");
     const secret = value as StoredCodexSecret;
     if (secret.issuedAtMs < 0 || secret.expiresAtMs <= secret.issuedAtMs
-        || secret.expiresAtMs - secret.issuedAtMs > MAX_TOKEN_LIFETIME_SECONDS * 1000
+        || secret.expiresAtMs - secret.issuedAtMs > CODEX_MAX_TOKEN_LIFETIME_SECONDS * 1000
         || secret.refreshAfterMs !== secret.expiresAtMs - Math.min(MAX_REFRESH_MARGIN_MS,
           Math.floor((secret.expiresAtMs - secret.issuedAtMs) / 10)))
       throw new Error("CREDENTIAL_UNAVAILABLE");
@@ -128,27 +130,42 @@ export class CodexAccountConnection {
    */
   connect(ceremony: Pick<HostCodexOAuthCeremony, "takeTokens">): CredentialResult {
     const handoff = ceremony.takeTokens();
-    if (!handoff) return denied();
+    const deny = (reason: CodexConnectionDiagnosticReason): CredentialResult => {
+      try { this.reportFailure?.({ stage: "credential_connection", reason }); }
+      catch { /* Reporting cannot change credential authority or disclose exceptions. */ }
+      return denied();
+    };
+    if (!handoff) return deny("handoff");
     const { tokens, binding, accountId } = handoff;
     let secret: Buffer | undefined;
+    let checkpoint: CodexConnectionDiagnosticReason = "binding_before_pin";
     try {
-      if (!this.current(binding, accountId)) return denied();
+      if (!this.current(binding, accountId)) return deny(checkpoint);
       const ref = randomUUID(), pin: CredentialRequest = { credential_ref: ref, connector_id: this.connectorId, revision: 0 };
+      checkpoint = "account_pin";
       this.repo(r => r.begin(ref, accountId));
+      checkpoint = "expiry";
       const expiry = this.expiry(tokens.expiresIn);
+      checkpoint = "secret_encoding";
       secret = Buffer.from(JSON.stringify({ kind: "codex-oauth.v1", accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken ?? null, idToken: tokens.idToken ?? null,
         ...expiry }), "utf8");
-      if (!tokens.accessToken || !this.current(binding, accountId)) return denied();
+      if (!tokens.accessToken) return deny(checkpoint);
+      checkpoint = "binding_before_save";
+      if (!this.current(binding, accountId)) return deny(checkpoint);
       const owned = secret;
       secret = undefined; // F5 takes ownership and erases the buffer.
       let saved: CredentialResult;
+      checkpoint = "credential_save";
       try { saved = this.credentials.save(pin, () => owned); }
       finally { owned.fill(0); } // Also covers denial before F5 invokes the source.
-      if (!saved.ok || !this.current(binding, accountId)) return denied();
+      if (!saved.ok) return deny(checkpoint);
+      checkpoint = "binding_before_publish";
+      if (!this.current(binding, accountId)) return deny(checkpoint);
+      checkpoint = "account_publish";
       this.repo(r => r.publish(ref, accountId));
       return saved;
-    } catch { return denied(); }
+    } catch { return deny(checkpoint); }
     finally {
       secret?.fill(0);
       tokens.accessToken = "";
@@ -174,6 +191,24 @@ export class CodexAccountConnection {
       });
       return usable.ok ? inspection : { ok: true, value: { ...inspection.value, state: "unavailable" } };
     } catch { return denied(); }
+  }
+  /** A Keychain read failure is not an expiry signal. Only a readable exact pin
+   * may cause refresh to reserve durable lifecycle intent. */
+  needsRefresh(pin: CredentialRequest): boolean {
+    try {
+      if (!this.current()) return false;
+      const account = this.readVerifiedAccount();
+      if (!account) return false;
+      this.repo(r => r.active(pin.credential_ref, pin.revision, account));
+      let due = false;
+      const read = this.credentials.consume(pin, bytes => {
+        this.repo(r => r.active(pin.credential_ref, pin.revision, account));
+        if (!this.current(undefined, account)) throw new Error("CREDENTIAL_UNAVAILABLE");
+        const secret = this.stored(bytes);
+        due = !!secret.refreshToken && this.clock() >= secret.refreshAfterMs;
+      });
+      return read.ok && due;
+    } catch { return false; }
   }
   consume(pin: CredentialRequest, sink: (secret: Buffer) => unknown): CredentialResult {
     try {

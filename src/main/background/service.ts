@@ -16,6 +16,7 @@ import { LOCAL_POLICY_UI_CHANNEL } from "../../shared/policy/p2-ui-contracts";
 
 export interface HostDocument extends TerminalOwner {
   openSystem(path: string): Promise<void>;
+  openOAuth?(url: string): Promise<void>;
 }
 
 /** Reuses the existing runtime/session lock and terminal service, without a second

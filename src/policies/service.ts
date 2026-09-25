@@ -101,9 +101,11 @@ export class LocalPolicyService {
         if (!agent || agent.deletedAt || !agents.version(target.agentId,target.versionId))
           throw new StorageError("AGENT_VERSION_NOT_FOUND");
       }
+      const sourceScope:ToolScope=source.adapterKind==="declarative_http_get" && source.httpEndpointResource
+        ? {http_endpoint:source.httpEndpointResource} : {workspace_dir:GOVERNED_LOGICAL_WORKSPACE_ROOT};
       return { context:this.context,connectorId:source.connectorId,connectionId:source.connectionId,
         lineage:target.layer==="organization" ? [{ layer:"organization" as const }] : [{ layer:"organization" as const },target],
-        scope:{ workspace_dir:GOVERNED_LOGICAL_WORKSPACE_ROOT },approvalRequired:false,
+        scope:sourceScope,approvalRequired:false,
         anchor:source.anchor,sourceEvidence:source };
     }
     const p = proofSchema.safeParse(this.resolve(tx,this.context,structuredClone(target),toolName));
@@ -154,7 +156,7 @@ export class LocalPolicyService {
     }
     const candidateScope = narrowScope(effective,definition.scope);
     for (const rule of definition.rules) if (rule.decision !== "deny") {
-      const roots = ["workspace_dir", "base_path"].filter((key) => Object.hasOwn(candidateScope,key));
+      const roots = ["workspace_dir", "base_path", "http_endpoint"].filter((key) => Object.hasOwn(candidateScope,key));
       if (!roots.length) throw new StorageError("POLICY_AUTHORITY_UNAVAILABLE");
       for (const key of roots) narrowScope({ [key]:candidateScope[key] },{ [key]:rule.matcher.value });
     }

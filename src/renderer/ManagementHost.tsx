@@ -1,5 +1,4 @@
 import { LocalRecoveryFixture } from "./LocalRecoveryFixture";
-import { CodexSubscriptionConnection } from "./CodexSubscriptionConnection";
 import {
   Activity,
   ArrowLeft,
@@ -54,10 +53,12 @@ export function ProjectManagementHost({
   project,
   section,
   snapshot,
+  localProjectId,
 }: {
   project: ProjectRecord;
   section: ProjectSettingsSection;
   snapshot: DesktopSnapshot;
+  localProjectId?: string;
 }) {
   const agents = snapshot.agents.filter((agent) => agent.projectId === project.id);
   const agentIds = new Set(agents.map((agent) => agent.id));
@@ -80,7 +81,8 @@ export function ProjectManagementHost({
     <div className="management-body">
       {section === "overview" && <ProjectOverview agents={agents} sessions={sessions} project={project} />}
       {section === "automation" && <AutomationPanel project={project} />}
-      {section === "capabilities" && <><CapabilitiesPanel subject="project" /><CodexSubscriptionConnection projectId={project.id} /></>}
+      {section === "capabilities" && <><CapabilitiesPanel subject="project" />
+        {localProjectId && <p>The Codex subscription connection belongs to the Personal Local Project. <LocalRouteLink to={{ kind: "project-agents", projectId: localProjectId }}>Open Personal Project connections</LocalRouteLink></p>}</>}
       {section === "safety" && <SafetyPanel />}
       {section === "audit" && <AuditPanel />}
     </div>

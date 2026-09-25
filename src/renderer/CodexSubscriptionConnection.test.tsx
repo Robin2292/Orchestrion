@@ -83,6 +83,7 @@ describe("experimental subscription account UI", () => {
       await act(async () => root.render(<DesktopApiProvider api={api}>
         <CodexSubscriptionConnection projectId="new-project" />
       </DesktopApiProvider>));
+      expect(codexAccount).toHaveBeenCalledWith({ operation: "cancel", projectId: "old-project" });
       expect(container.textContent).toContain("Account ••••");
       await act(async () => resolveOld(disconnected));
       expect(container.textContent).toContain("Account ••••");

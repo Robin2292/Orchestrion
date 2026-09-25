@@ -13,6 +13,7 @@ import { SourceCandidateSchema, SourceConnectorPinSchema, SourceDraftInputSchema
 import { toolJson, toolDigest } from "../tools/registry";
 import { SqliteFoundation, StorageError, type SqliteUnit } from "../storage/sqlite/foundation";
 import { SourceRepository, SOURCE_FENCE } from "./repository";
+import { httpResourceFromKey } from "./declarative-http";
 
 /** A synchronous host preflight. It is deliberately not serializable or accepted
  * from IPC: the discovery owner supplies it before a fenced SQLite transaction. */
@@ -244,12 +245,12 @@ export class LocalSourcePublicationService {
         try { const activeRelease=r.release(active.releaseId), snapshot=r.snapshot(activeRelease.snapshotId);
           adapterKind=snapshot.adapterKind;
           if (candidate && snapshot.pin.connectorRevision===p.revision) {
-            this.live(tx,snapshot,candidate);connectionReady=snapshot.adapterKind==="http";
+            this.live(tx,snapshot,candidate);connectionReady=snapshot.adapterKind==="http" || snapshot.adapterKind==="declarative_http_get";
           }
         } catch { /* typed Not Ready */ }
       }
       const reason=!accepted ? "SOURCE_NOT_ACCEPTED" : !published ? "SOURCE_NOT_PUBLISHED"
-        : !active ? "SOURCE_NOT_ACTIVE" : !connectionReady ? adapterKind!=="http" ? "SOURCE_ADAPTER_NOT_READY" : "SOURCE_DRIFT"
+        : !active ? "SOURCE_NOT_ACTIVE" : !connectionReady ? adapterKind!=="http" && adapterKind!=="declarative_http_get" ? "SOURCE_ADAPTER_NOT_READY" : "SOURCE_DRIFT"
           : "SOURCE_EXECUTION_NOT_READY";
       return SourceReadinessSchema.parse({ accepted,published,connectionReady,executionReady:false,activeReleaseId:active?.releaseId ?? null,reason });
     });
@@ -299,7 +300,7 @@ export class LocalSourcePublicationService {
     if (r.latestRelease(sourceId)?.id!==release.id || r.latestSnapshot(sourceId)?.id!==snapshot.id
       || release.sourceId!==sourceId || release.snapshotHash!==snapshot.contentHash)
       throw new StorageError("SOURCE_DRIFT");
-    if (snapshot.adapterKind!=="http" || release.adapterKind!=="http")
+    if (!(["http","declarative_http_get"].includes(snapshot.adapterKind) && release.adapterKind===snapshot.adapterKind))
       throw new StorageError("SOURCE_ADAPTER_NOT_READY");
     this.live(tx,snapshot,candidate);
     let reviewed=false;
@@ -314,15 +315,18 @@ export class LocalSourcePublicationService {
       FROM local_tool_contract_versions WHERE org_id=? AND project_id=? AND principal_type=? AND principal_id=?
       AND id=?`,this.context.org_id,this.context.project_id,this.context.principal.type,this.context.principal.id,tool.contractId);
     const body={ schemaVersion:"orchestrion.local.published-tool.v1",sourceId,connectionId:release.connectionId,
-      releaseId:release.id,adapterKind:"http",key,inputSchema:tool.inputSchema,outputSchema:tool.outputSchema };
+      releaseId:release.id,adapterKind:release.adapterKind,key,inputSchema:tool.inputSchema,outputSchema:tool.outputSchema };
     if (!row || row.source_namespace!==sourceId || row.tool_key!==key
       || row.contract_hash!==tool.contractHash || row.schema_hash!==tool.schemaHash
       || row.anchor_json!==toolJson(expected) || row.contract_json!==toolJson(body)
       || tool.schemaHash!==toolDigest(tool.inputSchema) || tool.contractHash!==toolDigest(body))
       throw new StorageError("TOOL_SCHEMA_DRIFT");
+    const httpEndpointResource=release.adapterKind==="declarative_http_get" ? httpResourceFromKey(key) : null;
+    if (release.adapterKind==="declarative_http_get" && !httpEndpointResource)
+      throw new StorageError("SOURCE_DRIFT");
     return { sourceReleaseId:release.id,sourceActivationRevision:active.revision,
       sourceId,connectionId:release.connectionId,connectorId:release.sourceId,
       contractId:tool.contractId,contractHash:tool.contractHash,schemaHash:tool.schemaHash,
-      anchor:expected,executionReady:false as const };
+      anchor:expected,adapterKind:release.adapterKind,httpEndpointResource,executionReady:false as const };
   }
 }

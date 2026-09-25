@@ -377,7 +377,6 @@ function AgentEditor({ workspace, api, source, metadata, onWorkspaceChange, onDi
         value = await api.localAgents.createVersion({ operation: "version.create", expected: workspace.expected, requestId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(), payload: {
           agentId: source.agentId,
           definition,
-          sourceVersionId: source.id,
           ...(metadataChanged ? { metadata: { name: form.name.trim(), description: form.description.trim() || null,
             userGuide: form.userGuide.trim() || null } } : {}),
         } });

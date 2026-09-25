@@ -83,19 +83,37 @@ export class HostHttpTransport {
     }
     throw denied();
   }
-  private send(url: URL,address: string,body: string,headers: Record<string,string>,signal: AbortSignal): Promise<HttpResponse> {
+  /** Exact, static, read-only profile. DNS is pinned into TLS; redirects never
+   * receive credentials. The caller's synchronous admission runs after DNS and
+   * immediately before the first request dispatch. */
+  async get(value:string,allowed:readonly string[],authorization:string|null,signal:AbortSignal,
+    maxBytes:number,beforeDispatch:()=>void):Promise<HttpResponse> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>262144) throw denied();
+    const {url,address}=await this.validate(value,allowed,signal);
+    if (signal.aborted) throw new ConnectorHttpError("CONNECTOR_HTTP_TIMEOUT");
+    beforeDispatch();
+    if (signal.aborted) throw new ConnectorHttpError("CONNECTOR_HTTP_TIMEOUT");
+    const response=await this.send(url,address,"",{
+      accept:"application/json",...(authorization ? {authorization:`Bearer ${authorization}`} : {}),
+    },signal,"GET",maxBytes);
+    if (response.status<200 || response.status>=300) throw new ConnectorHttpError("CONNECTOR_HTTP_FAILED");
+    requireJson(response);
+    return response;
+  }
+  private send(url: URL,address: string,body: string,headers: Record<string,string>,signal: AbortSignal,
+    method:"GET"|"POST"="POST",maxBytes=262144): Promise<HttpResponse> {
     return new Promise((resolve,reject) => {
       let done = false;
       const fail = () => { if (!done) { done = true; reject(new ConnectorHttpError(signal.aborted ? "CONNECTOR_HTTP_TIMEOUT" : "CONNECTOR_HTTP_FAILED")); } };
       try {
-        const options: RequestOptions & { autoSelectFamily:boolean } = { method:"POST",agent:false,family:4,autoSelectFamily:false,
+        const options: RequestOptions & { autoSelectFamily:boolean } = { method,agent:false,family:4,autoSelectFamily:false,
           rejectUnauthorized:true,signal,headers:{ ...headers,"content-length":Buffer.byteLength(body) },
           // Pin the validated address into the actual TLS dial; retain URL host for
           // certificate verification/SNI. Never perform a second unguarded lookup.
           lookup:(_host,_options,callback) => callback(null,address,4) };
         const req = this.io.request(url,options,(res) => {
           const chunks: Buffer[] = []; let size = 0;
-          res.on("data",(chunk: Buffer) => { size += chunk.length; if (size > 262144) { req.destroy(); fail(); } else chunks.push(chunk); });
+          res.on("data",(chunk: Buffer) => { size += chunk.length; if (size > maxBytes) { req.destroy(); fail(); } else chunks.push(chunk); });
           res.on("error",fail); res.on("aborted",fail);
           res.on("end",() => { if (!done) { done = true; resolve({ status:res.statusCode ?? 0,headers:res.headers,rawHeaders:[...res.rawHeaders],body:Buffer.concat(chunks).toString("utf8") }); } });
         });

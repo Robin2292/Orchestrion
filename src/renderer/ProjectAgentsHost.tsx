@@ -7,6 +7,7 @@ import type { LocalVersionPinSchema } from "../shared/local-contracts";
 import type { z } from "zod";
 import { LocalRouteLink } from "./navigation";
 import { readAgentCatalog } from "./agent-catalog-client";
+import { CodexSubscriptionConnection } from "./CodexSubscriptionConnection";
 
 type Pin = z.infer<typeof LocalVersionPinSchema>;
 type Transition = Extract<LocalAssignmentUiRequest, { operation: "disable" | "enable" | "remove" | "adopt" }>;
@@ -123,6 +124,7 @@ export function ProjectAgentsHost({ projectId, workspace, api }: {
       <div className="project-agent-header-actions"><LocalRouteLink className="button secondary-button" to={{ kind: "agent-library", projectId }}>Organization Library</LocalRouteLink><LocalRouteLink className="button primary-button" to={{ kind: "project-agent-add", projectId, agentId: null }}>Add Agent</LocalRouteLink><LocalRouteLink className="button secondary-button" to={{ kind: "local-agents", projectId }}><ArrowLeft size={14} /> Definitions</LocalRouteLink></div>
     </header>
     <div className="management-body agent-studio-body">
+      <CodexSubscriptionConnection projectId={projectId} />
       <div className="project-agent-statusbar"><span><LockKeyhole size={14} /> Local host decides access and version release</span><button type="button" className="button secondary-button" onClick={() => void reload()} disabled={loading || busy}><RefreshCw size={14} /> Reload</button></div>
       {error && <div className="agent-inline-alert" role="alert"><AlertCircle size={16} /><span>{error}</span></div>}
       {loading && <div className="agent-loading" role="status">Loading Project Assignments…</div>}

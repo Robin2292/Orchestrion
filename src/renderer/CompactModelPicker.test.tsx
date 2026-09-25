@@ -71,7 +71,7 @@ describe("CompactModelPicker", () => {
     expect(slider.value).toBe("3");
     expect(mounted.container.querySelector("[aria-label='Reset model settings']")).toBeNull();
     expect(mounted.container.querySelector("[role='tab'][aria-label='OpenAI'] .provider-logo")).not.toBeNull();
-    expect(mounted.container.querySelector<HTMLButtonElement>("[aria-label='Connect more providers (coming soon)']")?.disabled).toBe(true);
+    expect(mounted.container.querySelector<HTMLButtonElement>("[aria-label='Connect provider']")?.disabled).toBe(true);
   });
 
   it("snaps effort changes and wires priority, context variants, provider filters, and search", async () => {

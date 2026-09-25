@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { localFailure, type LocalFailure } from "../../shared/local-contracts";
 import { LOCAL_AGENT_SOUL_CHANNEL, LocalAgentSoulRequestSchema } from "../../shared/agent-soul-ui-contracts";
+import { CODEX_ACCOUNT_UI_CHANNEL, CodexAccountUiRequestSchema } from "../../shared/codex-account-ui-contracts";
+import { CODEX_AUTHORIZE_URL, CODEX_CLIENT_ID, CODEX_REDIRECT_URI } from "../credentials/codex-oauth-provider";
+import { parseCodexOAuthDiagnostic } from "../credentials/codex-oauth-diagnostics";
+import { parseCodexTextDiagnostic } from "../../providers/codex-text-diagnostics";
 import type { RendererDocumentIdentity } from "../renderer-document-lifecycle";
 
 export interface HostProcess {
@@ -36,7 +40,31 @@ export class BackgroundHost extends EventEmitter {
     private readonly openSystem: (path: string) => Promise<string>,
     private readonly limits = budgets,
     private readonly killChild: (pid: number) => void = () => {},
-    private readonly soulUserData?: string) { super(); }
+    private readonly soulUserData?: string,
+    private readonly openOAuthBrowser?: (url: string) => Promise<void>) { super(); }
+
+  private authorizedOAuth(pending: Pending, raw: string): boolean {
+    if (!pending.document.isActive() || pending.channel !== CODEX_ACCOUNT_UI_CHANNEL || !this.openOAuthBrowser) return false;
+    const request = CodexAccountUiRequestSchema.safeParse(pending.input);
+    if (!request.success || request.data.operation !== "start") return false;
+    try {
+      const url = new URL(raw), expected = new URL(CODEX_AUTHORIZE_URL);
+      if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.hash
+          || url.username || url.password) return false;
+      const keys = [...url.searchParams.keys()];
+      if (keys.length !== 10 || new Set(keys).size !== 10) return false;
+      const get = (key: string) => url.searchParams.get(key);
+      return get("response_type") === "code" && get("client_id") === CODEX_CLIENT_ID
+        && get("redirect_uri") === CODEX_REDIRECT_URI
+        && get("scope") === "openid profile email offline_access"
+        && get("code_challenge_method") === "S256"
+        && /^[A-Za-z0-9_-]{43}$/.test(get("code_challenge") ?? "")
+        && /^[A-Za-z0-9_-]{43}$/.test(get("state") ?? "")
+        && get("id_token_add_organizations") === "true"
+        && get("codex_cli_simplified_flow") === "true"
+        && get("originator") === "orchestrion";
+    } catch { return false; }
+  }
 
   private authorizedOpen(pending: Pending, path: string): boolean {
     if (!pending.document.isActive()) return false;
@@ -70,6 +98,20 @@ export class BackgroundHost extends EventEmitter {
       if (this.child !== child || this.quitting || !raw || typeof raw !== "object") return;
       const message = raw as Record<string, unknown>;
       if (message.type === "ready") { this.ready = true; finish(true); return; }
+      if (message.type === "codex-oauth-diagnostic") {
+        const keys = Reflect.ownKeys(message);
+        const diagnostic = keys.length === 2 && keys.includes("type") && keys.includes("diagnostic")
+          ? parseCodexOAuthDiagnostic(message.diagnostic) : null;
+        if (diagnostic) this.emit("codex-oauth-diagnostic", diagnostic);
+        return;
+      }
+      if (message.type === "codex-text-diagnostic") {
+        const keys = Reflect.ownKeys(message);
+        const diagnostic = keys.length === 2 && keys.includes("type") && keys.includes("diagnostic")
+          ? parseCodexTextDiagnostic(message.diagnostic) : null;
+        if (diagnostic) this.emit("codex-text-diagnostic", diagnostic);
+        return;
+      }
       if (message.type === "child" && typeof message.pid === "number" && Number.isSafeInteger(message.pid) && message.pid > 1) {
         if (message.active === true) this.children.add(message.pid); else this.children.delete(message.pid);
         return;
@@ -78,6 +120,16 @@ export class BackgroundHost extends EventEmitter {
       if (typeof message.id !== "string") return;
       const pending = this.pending.get(message.id);
       if (!pending) return;
+      if (message.type === "open-oauth-url") {
+        if (typeof message.url !== "string" || !this.authorizedOAuth(pending, message.url)) {
+          child.postMessage({ type: "opened", id: message.id, ok: false }); return;
+        }
+        void this.openOAuthBrowser!(message.url).then(() => {
+          if (this.child === child) child.postMessage({ type: "opened", id: message.id,
+            ok: pending.document.isActive() });
+        }, () => { if (this.child === child) child.postMessage({ type: "opened", id: message.id, ok: false }); });
+        return;
+      }
       if (message.type === "open-system") {
         // Only the exact originating request/document can consume this OS adapter.
         if (typeof message.path !== "string" || !this.authorizedOpen(pending, message.path)) {

@@ -2,13 +2,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SqliteFoundation } from "../../storage/sqlite/foundation";
 import { migrate, SQLITE_MIGRATIONS } from "../../storage/sqlite/migrations";
 import { HostCredentialService } from "./service";
 import { CodexAccountConnection, type HostCodexRefreshPort } from "./codex-account-connection";
 import type { HostCodexOAuthCeremony, HostOAuthBinding } from "./codex-oauth-ceremony";
 import type { KeychainAdapter } from "./keychain";
+import type { CodexOAuthDiagnostic } from "./codex-oauth-diagnostics";
 
 const CANARY = "SYNTHETIC_CODEX_TOKEN_NEVER_PROJECT";
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -51,20 +52,106 @@ function fixture(store = open(), keychain = new MemoryKeychain(), now: () => num
   let verified: string | null = "account-one";
   const credentials = new HostCredentialService(store, keychain, { org_id: c.org_id, principal: c.principal },
     { isActive: () => true, allow: (_op, connector) => connector === connectorId });
-  const connection = new CodexAccountConnection(store, credentials, connectorId, () => selected, () => verified, now);
-  function ceremony(accountId = "account-one", accessToken = CANARY) {
+  const diagnostics: CodexOAuthDiagnostic[] = [];
+  const connection = new CodexAccountConnection(store, credentials, connectorId, () => selected, () => verified, now,
+    diagnostic => diagnostics.push(diagnostic));
+  function ceremony(accountId = "account-one", accessToken = CANARY, expiresIn = 3600) {
     let handoff: unknown = { binding: { ...selected }, accountId,
       tokens: { accessToken, refreshToken: CANARY + "-refresh", idToken: CANARY + "-id",
-        expiresIn: 3600 } };
+        expiresIn } };
     return { takeTokens: () => { const result = handoff; handoff = null; return result; } } as HostCodexOAuthCeremony;
   }
-  return { store, keychain, connection, ceremony,
+  return { store, keychain, connection, ceremony, credentials, diagnostics,
     select(value: HostOAuthBinding | null) { selected = value; },
     selected: () => selected,
     verify(value: string | null) { verified = value; } };
 }
 afterEach(() => { for (const store of stores.splice(0)) try { store.close(); } catch { /* closed by test */ }
   for (const path of dirs.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+describe("ORCLOCAL-209 lifetime and closed connection diagnostics", () => {
+  it.each([7 * 86400 + 1, 10 * 86400, 14 * 86400])("persists and reopens a verified %i-second lifetime without extending its deadline", lifetime => {
+    let now = 1_800_000_000_000;
+    const path = mkdtempSync(join(tmpdir(), "orclocal-209-")), keychain = new MemoryKeychain();
+    const f = fixture(open(path), keychain, () => now);
+    const created = f.connection.connect(f.ceremony("account-one", CANARY, lifetime));
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw Error("connection failed");
+    const pin = { credential_ref: created.value.credential_ref, connector_id: connectorId, revision: 0 };
+    expect(f.connection.inspect(pin)).toMatchObject({ ok: true, value: { state: "ready" } });
+    expect(f.diagnostics).toEqual([]);
+    f.store.close();
+    const restarted = fixture(open(path), keychain, () => now);
+    expect(restarted.connection.inspect(pin)).toMatchObject({ ok: true, value: { state: "ready" } });
+    now += lifetime * 1000;
+    expect(restarted.connection.inspect(pin)).toMatchObject({ ok: true, value: { state: "unavailable" } });
+    expect(restarted.connection.consume(pin, () => { throw Error("expired sink"); }).ok).toBe(false);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 14 * 86400 + 1])("rejects invalid lifetime %s before F5 without leaking or publishing", lifetime => {
+    const f = fixture(), handoff = f.ceremony("account-one", CANARY, lifetime).takeTokens()!;
+    expect(f.connection.connect({ takeTokens: () => handoff }).ok).toBe(false);
+    expect(f.diagnostics).toEqual([{ stage: "credential_connection", reason: "expiry" }]);
+    expect(JSON.stringify(f.diagnostics)).not.toContain(CANARY);
+    expect(f.keychain.calls).toBe(0);
+    expect(f.store.transaction(tx => tx.all("SELECT state FROM local_codex_oauth_accounts"))).toEqual([{ state: "pending" }]);
+    expect(f.store.transaction(tx => tx.all("SELECT * FROM credential_metadata"))).toEqual([]);
+    expect(f.store.transaction(tx => tx.all("SELECT * FROM credential_staging"))).toEqual([]);
+    expect(handoff.tokens.accessToken).toBe("");
+    expect(handoff.tokens.refreshToken).toBeUndefined();
+    expect(f.connection.repairPending()).toBe(1);
+  });
+
+  it("rejects an excessive persisted lifetime even when its refresh deadline is well formed", () => {
+    const f = fixture(), created = f.connection.connect(f.ceremony());
+    if (!created.ok) throw Error("connection failed");
+    const slot = [...f.keychain.items.keys()].find(key => key.endsWith(":0"))!;
+    const bytes = f.keychain.items.get(slot)!;
+    const payload = JSON.parse(bytes.subarray(32).toString("utf8"));
+    payload.expiresAtMs = payload.issuedAtMs + (14 * 86400 + 1) * 1000;
+    payload.refreshAfterMs = payload.expiresAtMs - 60_000;
+    f.keychain.items.set(slot, Buffer.concat([bytes.subarray(0, 32), Buffer.from(JSON.stringify(payload))]));
+    const pin = { credential_ref: created.value.credential_ref, connector_id: connectorId, revision: 0 };
+    expect(f.connection.inspect(pin)).toMatchObject({ ok: true, value: { state: "unavailable" } });
+    expect(f.connection.consume(pin, () => { throw Error("invalid sink"); }).ok).toBe(false);
+  });
+
+  it.each(["handoff", "binding_before_pin", "account_pin", "secret_encoding", "binding_before_save",
+    "credential_save", "binding_before_publish", "account_publish"] as const)("reports only the %s connection checkpoint", reason => {
+    const f = fixture(), handoff = f.ceremony().takeTokens()!;
+    if (reason === "binding_before_pin") f.verify("another-account");
+    if (reason === "account_pin") f.store.transaction(tx => tx.run(`CREATE TRIGGER deny_pin BEFORE INSERT ON local_codex_oauth_accounts
+      BEGIN SELECT RAISE(ABORT,'${CANARY}'); END`));
+    if (reason === "secret_encoding") handoff.tokens.accessToken = "";
+    if (reason === "binding_before_save") Object.defineProperty(handoff.tokens, "expiresIn", {
+      get() { f.verify("another-account"); return 3600; },
+    });
+    if (reason === "credential_save") f.keychain.failAt = 1;
+    if (reason === "binding_before_publish") {
+      const save = f.credentials.save.bind(f.credentials);
+      vi.spyOn(f.credentials, "save").mockImplementation((...args) => {
+        const saved = save(...args); f.verify("another-account"); return saved;
+      });
+    }
+    if (reason === "account_publish") f.store.transaction(tx => tx.run(`CREATE TRIGGER deny_publish BEFORE UPDATE ON local_codex_oauth_accounts
+      WHEN NEW.state='active' BEGIN SELECT RAISE(ABORT,'${CANARY}'); END`));
+    const result = f.connection.connect({ takeTokens: () => reason === "handoff" ? null : handoff });
+    expect(result.ok).toBe(false);
+    expect(f.diagnostics).toEqual([{ stage: "credential_connection", reason }]);
+    expect(JSON.stringify({ result, diagnostics: f.diagnostics })).not.toContain(CANARY);
+    expect(f.store.transaction(tx => tx.all("SELECT state FROM local_codex_oauth_accounts WHERE state='active'"))).toEqual([]);
+    if (reason !== "handoff") expect(handoff.tokens.accessToken).toBe("");
+  });
+
+  it("does not let a failed reporter change denial or token clearing", () => {
+    const f = fixture(), handoff = f.ceremony("account-one", CANARY, 14 * 86400 + 1).takeTokens()!;
+    const connection = new CodexAccountConnection(f.store, f.credentials, connectorId, f.selected,
+      () => "account-one", Date.now, () => { throw Error(CANARY); });
+    expect(connection.connect({ takeTokens: () => handoff })).toMatchObject({ ok: false });
+    expect(handoff.tokens.accessToken).toBe("");
+    expect(f.keychain.calls).toBe(0);
+  });
+});
 
 describe("ORCLOCAL-172 host account pin", () => {
   it("stores only a scoped account pin in SQLite and Keychain bytes behind F5", () => {
@@ -86,6 +173,23 @@ describe("ORCLOCAL-172 host account pin", () => {
     expect(JSON.stringify(row)).not.toContain(CANARY);
     expect(JSON.stringify(created)).not.toContain(CANARY);
     expect(f.keychain.items.size).toBe(2);
+  });
+
+  it("reserves refresh only for readable exact credentials past the margin", () => {
+    let now = 1_000_000;
+    const f = fixture(open(), new MemoryKeychain(), () => now);
+    const created = f.connection.connect(f.ceremony());
+    if (!created.ok) throw Error("connection failed");
+    const pin = { credential_ref: created.value.credential_ref, connector_id: connectorId, revision: 0 };
+    expect(f.connection.needsRefresh(pin)).toBe(false);
+    now += 3_300_000;
+    expect(f.connection.needsRefresh(pin)).toBe(false);
+    now += 260_000;
+    expect(f.connection.needsRefresh(pin)).toBe(true);
+    f.keychain.reset(); f.keychain.failAt = 1;
+    expect(f.connection.needsRefresh(pin)).toBe(false);
+    expect(f.store.transaction(tx => tx.get("SELECT pending_kind FROM local_codex_oauth_accounts WHERE credential_ref=?", pin.credential_ref)))
+      .toEqual({ pending_kind: null });
   });
 
   it("denies selected Project, connector, account and stale revision before any secret sink", () => {

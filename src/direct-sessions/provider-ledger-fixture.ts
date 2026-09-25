@@ -44,7 +44,7 @@ export class DirectLedgerFixtureTurn {
         ||instructions.agentVersionId!==session.agent_version_id
         ||instructions.modelId!==input.pricing.modelId)
         throw new StorageError("PROVIDER_NOT_READY");
-      const messages:FixtureRequest["messages"]=[
+      const messages:{role:"system"|"user";content:string}[]=[
         ...(instructions.systemPrompt?[{role:"system" as const,content:instructions.systemPrompt}]:[]),
         {role:"user",content:input.text}];
       const request:FixtureRequest={sessionId:input.sessionId,attemptId:input.attemptId,
@@ -63,7 +63,7 @@ export class DirectLedgerFixtureTurn {
         agent:{agentId:session.agent_id,versionId:session.agent_version_id},text:input.text,mode:"text" as const};
       let text="",coverage=false,complete=false;
       this.direct.assertDispatch(input.sessionId,input.attemptId,input.binding);
-      for await(const event of this.port.call(wire,input.signal,request.messages)) {
+      for await(const event of this.port.call(wire,input.signal,messages)) {
         this.direct.assertDispatch(input.sessionId,input.attemptId,input.binding);
         if(event.type==="coverage") {if(coverage)throw new StorageError("PROVIDER_PROTOCOL_ERROR");coverage=true;}
         else if(event.type==="text") {if(!coverage)throw new StorageError("PROVIDER_PROTOCOL_ERROR");text+=event.text;}

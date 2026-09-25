@@ -24,7 +24,9 @@
     "smoke:terminal-lifecycle-native": "node scripts/require-node-22.mjs && node scripts/run-native-workspace-lifecycle-smoke.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
-    "test:signing": "node --test scripts/build-signed-mac.test.mjs"
+    "test:signing": "node --test scripts/build-signed-mac.test.mjs scripts/build-local-keychain.test.mjs",
+    "dist:local-keychain:check": "node scripts/build-local-keychain.mjs --check",
+    "dist:local-keychain": "node scripts/build-local-keychain.mjs"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",

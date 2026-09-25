@@ -17,6 +17,7 @@ export interface CompactModelPickerProps {
   models: ModelOption[];
   onOpenChange: (open: boolean) => void;
   onChange: (model: ModelOption, effort: string | null, serviceTier: string | null) => Promise<void> | void;
+  onConnectProviders?: () => void;
 }
 
 function normalizedProvider(model: ModelOption): string {
@@ -88,7 +89,7 @@ function currentEffortIndex(efforts: ModelReasoningEffort[], effort: string | nu
   return Math.max(0, found >= 0 ? found : efforts.findIndex((candidate) => candidate.reasoningEffort));
 }
 
-export function CompactModelPicker({ open, disabled, session, models, onOpenChange, onChange }: CompactModelPickerProps) {
+export function CompactModelPicker({ open, disabled, session, models, onOpenChange, onChange, onConnectProviders }: CompactModelPickerProps) {
   const [provider, setProvider] = useState("all");
   const [query, setQuery] = useState("");
   const activeModel = session.model
@@ -233,7 +234,7 @@ export function CompactModelPicker({ open, disabled, session, models, onOpenChan
           <button type="button" role="tab" aria-selected={provider === "all"} aria-label="All providers" onClick={() => setProvider("all")}><LayoutGrid size={14} aria-hidden="true" /></button>
           {providers.map((item) => <button type="button" role="tab" aria-selected={provider === item.id} aria-label={item.label} title={item.label} onClick={() => setProvider(item.id)} key={item.id}><ProviderLogo providerId={item.id} label={item.label} /></button>)}
         </div>
-        <button className="compact-provider-add" type="button" aria-label="Connect more providers (coming soon)" title="More providers coming soon" disabled><Plus size={14} aria-hidden="true" /></button>
+        <button className="compact-provider-add" type="button" aria-label="Connect provider" title="Connect provider for Orchestrion Sessions" disabled={!onConnectProviders} onClick={onConnectProviders}><Plus size={14} aria-hidden="true" /></button>
       </div>
 
       <label className="compact-model-search">

@@ -12,6 +12,20 @@
 static napi_value fail(napi_env env) {
   napi_throw_error(env, NULL, "CREDENTIAL_UNAVAILABLE"); return NULL;
 }
+// Closed, non-sensitive categories for local package diagnostics. The host
+// adapter still collapses every native failure to CREDENTIAL_UNAVAILABLE.
+static napi_value fail_status(napi_env env, OSStatus status) {
+  const char *code = "KEYCHAIN_OPERATION_DENIED";
+  if (status == errSecMissingEntitlement) code = "KEYCHAIN_MISSING_ENTITLEMENT";
+  else if (status == errSecInteractionNotAllowed) code = "KEYCHAIN_INTERACTION_DENIED";
+  else if (status == errSecAuthFailed) code = "KEYCHAIN_AUTH_DENIED";
+  napi_value message, error, reason;
+  if (napi_create_string_utf8(env, "CREDENTIAL_UNAVAILABLE", NAPI_AUTO_LENGTH, &message) != napi_ok
+      || napi_create_error(env, NULL, message, &error) != napi_ok
+      || napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &reason) != napi_ok
+      || napi_set_named_property(env, error, "code", reason) != napi_ok) return fail(env);
+  napi_throw(env, error); return NULL;
+}
 static CFMutableDictionaryRef dict(void) {
   return CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 }
@@ -56,7 +70,7 @@ static napi_value read_item(napi_env env, napi_callback_info info) {
   CFTypeRef data = NULL; OSStatus status = SecItemCopyMatching(q, &data); CFRelease(q);
   napi_value result;
   if (status == errSecItemNotFound) { napi_get_null(env, &result); return result; }
-  if (status != errSecSuccess || !data) { if (data) CFRelease(data); return fail(env); }
+  if (status != errSecSuccess || !data) { if (data) CFRelease(data); return fail_status(env, status); }
   if (CFGetTypeID(data) != CFDataGetTypeID() || CFDataGetLength(data) < 32 || CFDataGetLength(data) > 65568) {
     CFRelease(data); return fail(env);
   }
@@ -88,7 +102,7 @@ static napi_value exchange(napi_env env, napi_callback_info info) {
     status = SecItemUpdate(q, changes); CFRelease(changes); CFRelease(expected);
   }
   CFRelease(tag); CFRelease(value); CFRelease(q);
-  if (status != errSecSuccess) return fail(env);
+  if (status != errSecSuccess) return fail_status(env, status);
   napi_value result; napi_get_undefined(env, &result); return result;
 }
 static napi_value remove_item(napi_env env, napi_callback_info info) {
@@ -99,7 +113,7 @@ static napi_value remove_item(napi_env env, napi_callback_info info) {
   if (!tag) { CFRelease(q); return fail(env); }
   CFDictionarySetValue(q, kSecAttrGeneric, tag);
   OSStatus status = SecItemDelete(q); CFRelease(tag); CFRelease(q);
-  if (status != errSecSuccess && status != errSecItemNotFound) return fail(env);
+  if (status != errSecSuccess && status != errSecItemNotFound) return fail_status(env, status);
   napi_value result; napi_get_undefined(env, &result); return result;
 }
 static napi_value init(napi_env env, napi_value exports) {

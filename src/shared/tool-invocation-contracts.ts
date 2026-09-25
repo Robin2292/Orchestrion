@@ -19,7 +19,7 @@ export type ToolInvocationRequest = z.infer<typeof ToolInvocationRequestSchema>;
 /** Code-reviewed composition metadata, never Tool.describe/model metadata. */
 export const ToolPlanningReviewSchema = z.object({
   version: LocalIdSchema, effect: z.enum(["read_only", "protected"]),
-  resourceKind: z.enum(["logical_workspace_path", "filesystem"]),
+  resourceKind: z.enum(["logical_workspace_path", "filesystem", "http_endpoint"]),
 }).strict();
 export type ToolPlanningReview = z.infer<typeof ToolPlanningReviewSchema>;
 export const ToolPlannerOutputSchema = z.object({ arguments: z.record(z.unknown()),
@@ -76,6 +76,7 @@ export const ToolInvocationPlanSchema = z.object({
   policies: z.array(InvocationPolicyEvidenceSchema).min(1).max(4),
   arguments: z.record(z.unknown()), claims: ToolPlannerOutputSchema.shape.claims, scope: ToolScopeSchema,
   directGrantHash: LocalHashSchema.optional(), directGrantLimits: DirectGrantLimitsSchema.optional(), hash: LocalHashSchema,
+  sourceRuntimePin: z.object({ releaseId:LocalIdSchema,activationRevision:LocalRevisionSchema }).strict().optional(),
 }).strict().refine((value) => value.directGrantHash !== undefined && value.directGrantLimits !== undefined,
   { message: "DIRECT_GRANT_IDENTITY_REQUIRED" });
 export type ToolInvocationPlan = z.infer<typeof ToolInvocationPlanSchema>;

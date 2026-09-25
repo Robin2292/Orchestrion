@@ -5,6 +5,7 @@ import { meetScopes, narrowScope, validateScope } from "./p0-scope";
 
 const token = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/);
 const path = z.string().refine(exactPath);
+const endpoint = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const decision = z.enum(["allow", "require_approval", "deny"]);
 const scope = z.unknown().superRefine((value, ctx) => {
   try { validateScope(value as Json); } catch { ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid scope" }); }
@@ -12,10 +13,15 @@ const scope = z.unknown().superRefine((value, ctx) => {
 
 // Exact field vocabulary from ToolPolicyRuleV1; unknown operators fail closed.
 export const P0RuleSchema = z.object({
-  rule_id: token, resource_type: z.literal("workspace_path"), mode: z.enum(["read", "write"]),
-  matcher: z.object({ kind: z.enum(["exact", "path_prefix"]), value: path }).strict(),
-  decision, reason_code: token,
-}).strict();
+  rule_id: token, resource_type: z.enum(["workspace_path", "http_endpoint"]),mode:z.enum(["read","write"]),
+  matcher:z.object({kind:z.enum(["exact","path_prefix"]),value:z.string()}).strict(),
+  decision,reason_code:token,
+}).strict().superRefine((v,ctx)=>{
+  if (v.resource_type==="http_endpoint"
+    ? v.mode!=="read" || v.matcher.kind!=="exact" || !endpoint.safeParse(v.matcher.value).success
+    : !path.safeParse(v.matcher.value).success)
+    ctx.addIssue({code:z.ZodIssueCode.custom,message:"INVALID_RESOURCE_RULE"});
+});
 
 /** Narrow P0-owned projection of already resolved policy input. It deliberately
  * has no release lifecycle, Tool contract, grant, credential or execution authority.
@@ -31,9 +37,12 @@ export const P0EvaluationSchema = z.object({
     policy_key: token.max(128), scope, approval_required: z.boolean(),
     rules: z.array(P0RuleSchema).min(1).max(256), default_decision: z.literal("deny"),
   }).strict().refine((p) => new Set(p.rules.map((r) => r.rule_id)).size === p.rules.length)).max(64),
-  claims: z.array(z.object({
-    type: z.literal("workspace_path"), value: path, mode: z.enum(["read", "write"]),
-  }).strict()).min(1).max(256),
+  claims: z.array(z.object({type:z.enum(["workspace_path","http_endpoint"]),value:z.string(),
+    mode:z.enum(["read","write"])}).strict().superRefine((v,ctx)=>{
+      if (v.type==="http_endpoint" ? v.mode!=="read" || !endpoint.safeParse(v.value).success
+        : !path.safeParse(v.value).success)
+        ctx.addIssue({code:z.ZodIssueCode.custom,message:"INVALID_RESOURCE_CLAIM"});
+    })).min(1).max(256),
 }).strict().refine((p) => new Set(p.policies.map((r) => r.policy_key)).size === p.policies.length);
 
 /** F2 envelope reuse only; intentionally no IPC handler/registration in P0. */
@@ -80,7 +89,8 @@ export function evaluateLocalPolicy(raw: unknown): P0Decision {
       for (const claim of value.claims) {
         const matches = policy.rules.filter((rule) => rule.resource_type === claim.type
           && rule.mode === claim.mode && (claim.value === rule.matcher.value
-            || (rule.matcher.kind === "path_prefix" && claim.value.startsWith(`${rule.matcher.value}/`))));
+            || (rule.resource_type === "workspace_path" && rule.matcher.kind === "path_prefix"
+              && claim.type === "workspace_path" && claim.value.startsWith(`${rule.matcher.value}/`))));
         if (!matches.length) add("deny", "TOOL_POLICY_DEFAULT_DENY");
         for (const rule of matches) add(rule.decision, rule.reason_code);
       }

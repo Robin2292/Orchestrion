@@ -14,7 +14,9 @@ export function CodexSubscriptionConnection({ projectId }: { projectId: string }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const displayedProject = useRef(projectId);
+  const pending = useRef(false);
   displayedProject.current = projectId;
+  pending.current = value.state === "pending";
   useEffect(() => {
     let active = true;
     setOptIn(false);
@@ -24,7 +26,10 @@ export function CodexSubscriptionConnection({ projectId }: { projectId: string }
     if (api?.codexAccount) void api.codexAccount({ operation: "read", projectId }).then(next => {
       if (active && displayedProject.current === projectId) setValue(next);
     }, () => { if (active && displayedProject.current === projectId) setError(true); });
-    return () => { active = false; };
+    return () => { active = false;
+      if (pending.current && api?.codexAccount)
+        void api.codexAccount({ operation: "cancel", projectId }).catch(() => undefined);
+    };
   }, [api, projectId]);
   useEffect(() => {
     if (value.state !== "pending" || !api?.codexAccount) return;
@@ -65,7 +70,7 @@ export function CodexSubscriptionConnection({ projectId }: { projectId: string }
       <strong>{label}</strong>
       {value.state === "connected" && value.accountDisplay && <span>Account {value.accountDisplay}</span>}
     </div>
-    {value.availability === "unavailable" && <p>Connection is unavailable for this Project in this build. A reviewed sign-in registration is not configured.</p>}
+    {value.availability === "unavailable" && <p>Connection is unavailable for this Personal Local Project. Check the Local host and try again.</p>}
     {value.state === "connected" && <p>Connected means a local credential is present. Agent execution readiness and subscription entitlements are checked separately.</p>}
     {error && <p role="alert">Account status could not be verified. Try again.</p>}
     <label className="codex-subscription-opt-in">

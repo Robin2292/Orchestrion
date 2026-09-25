@@ -22,6 +22,7 @@ export type AgentSettingsSection = (typeof AGENT_SETTINGS_SECTIONS)[number];
 
 export type LocalRoute =
   | { kind: "workspace" }
+  | { kind: "provider-settings" }
   | { kind: "inbox"; projectId: string | null }
   | { kind: "session"; projectId: string; agentId: string; sessionId: string }
   | { kind: "direct-session"; projectId: string; sessionId: string | null }
@@ -85,6 +86,10 @@ export function parseLocalRoute(hash: string): LocalRoute {
   const path = rawPath.split("?", 1)[0].replace(/^\/+|\/+$/g, "");
   if (!path) return { kind: "workspace" };
   const parts = path.split("/");
+
+  if (parts.length === 2 && parts[0] === "settings" && parts[1] === "providers") {
+    return { kind: "provider-settings" };
+  }
 
   if (parts.length === 1 && parts[0] === "inbox") {
     return { kind: "inbox", projectId: null };
@@ -163,6 +168,7 @@ export function parseLocalRoute(hash: string): LocalRoute {
 export function localRouteHash(route: LocalRoute): string {
   const id = (value: string) => encodeURIComponent(value);
   if (route.kind === "workspace") return "#/";
+  if (route.kind === "provider-settings") return "#/settings/providers";
   if (route.kind === "inbox") return route.projectId ? `#/projects/${id(route.projectId)}/inbox` : "#/inbox";
   if (route.kind === "session") {
     return `#/projects/${id(route.projectId)}/agents/${id(route.agentId)}/sessions/${id(route.sessionId)}`;
@@ -192,7 +198,7 @@ export function localRouteHash(route: LocalRoute): string {
 
 export function validateRouteContext(route: LocalRoute, snapshot: DesktopSnapshot, localAgents?: LocalAgentWorkspace | null,
   localPolicies?: LocalPolicyUiWorkspace | null): LocalRoute {
-  if (route.kind === "workspace" || route.kind === "recovery") return route;
+  if (route.kind === "workspace" || route.kind === "provider-settings" || route.kind === "recovery") return route;
   if (route.kind === "inbox" && route.projectId === null) return route;
   if (route.kind === "direct-session" || route.kind === "local-agents" || route.kind === "local-agent-create" || route.kind === "local-agent" || route.kind === "project-agents" || route.kind === "project-agent-add" || route.kind === "project-agent-create" || route.kind === "agent-library" || route.kind === "agent-library-create" || route.kind === "agent-library-detail") {
     if (!localAgents) return route;

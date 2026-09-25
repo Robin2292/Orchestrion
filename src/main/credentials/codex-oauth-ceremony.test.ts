@@ -3,6 +3,7 @@ import { createServer, request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CODEX_CALLBACK_PATH, HostCodexOAuthCeremony,
   type HostOAuthBinding, type HostOAuthPorts, type HostOAuthTokens } from "./codex-oauth-ceremony";
+import { CodexOAuthDiagnosticError, type CodexOAuthDiagnostic } from "./codex-oauth-diagnostics";
 
 const binding: HostOAuthBinding = {
   orgId: "org-1", principalId: "person-1", projectId: "project-1", connectorId: "connector-1",
@@ -23,14 +24,17 @@ const active: HostCodexOAuthCeremony[] = [];
 afterEach(() => { for (const ceremony of active) ceremony.cancel(); active.length = 0; });
 
 async function fixture(options?: { timeoutMs?: number; enabled?: boolean;
-  exchange?: HostOAuthPorts["exchangeCode"]; verifyAccount?: HostOAuthPorts["verifyAccount"] }) {
+  exchange?: HostOAuthPorts["exchangeCode"]; verifyAccount?: HostOAuthPorts["verifyAccount"];
+  completeConnection?: HostOAuthPorts["completeConnection"] }) {
   const port = await freePort();
-  const redirectUri = `http://127.0.0.1:${port}${CODEX_CALLBACK_PATH}`;
+  const redirectUri = `http://localhost:${port}${CODEX_CALLBACK_PATH}`;
   let current: HostOAuthBinding | null = { ...binding };
   let browserUrl = "";
   let browserOpens = 0;
+  const diagnostics: CodexOAuthDiagnostic[] = [];
   const exchanges: Array<Parameters<HostOAuthPorts["exchangeCode"]>[0]> = [];
   let verifiedAccount = "account-1";
+  let completedHandoff: ReturnType<HostCodexOAuthCeremony["takeTokens"]> = null;
   const ports: HostOAuthPorts = {
     readBinding: () => current,
     openSystemBrowser: async url => { browserUrl = url; browserOpens++; },
@@ -39,18 +43,21 @@ async function fixture(options?: { timeoutMs?: number; enabled?: boolean;
       return options?.exchange ? options.exchange(input) : { accessToken: "secret-access", refreshToken: "secret-refresh" };
     },
     verifyAccount: async tokens => options?.verifyAccount ? options.verifyAccount(tokens) : verifiedAccount,
+    completeConnection: ceremony => options?.completeConnection
+      ? options.completeConnection(ceremony)
+      : !!(completedHandoff = ceremony.takeTokens()),
+    reportFailure: diagnostic => diagnostics.push(diagnostic),
   };
   const ceremony = new HostCodexOAuthCeremony({
     enabled: options?.enabled ?? true, clientId: "synthetic-local-client",
     authorizeUrl: "https://auth.example.test/oauth/authorize", redirectUri,
-    scope: "openid profile offline_access", timeoutMs: options?.timeoutMs ?? 5000,
+    scope: "openid profile email offline_access", timeoutMs: options?.timeoutMs ?? 5000,
   }, ports);
   active.push(ceremony);
   const callback = async (params: string, path = CODEX_CALLBACK_PATH, host?: string) => {
     const url = `http://127.0.0.1:${port}${path}?${params}`;
-    if (!host) return fetch(url);
     return new Promise<Response>((resolve, reject) => {
-      const call = request(url, { headers: { Host: host } }, reply => {
+      const call = request(url, { headers: { Host: host ?? `localhost:${port}` } }, reply => {
         const chunks: Buffer[] = [];
         reply.on("data", chunk => chunks.push(Buffer.from(chunk)));
         reply.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: reply.statusCode })));
@@ -65,6 +72,8 @@ async function fixture(options?: { timeoutMs?: number; enabled?: boolean;
   return { ceremony, start, callback, validParams, redirectUri, exchanges,
     browserUrl: () => browserUrl,
     browserOpens: () => browserOpens,
+    diagnostics,
+    completedHandoff: () => completedHandoff,
     setBinding(value: HostOAuthBinding | null) { current = value; },
     setVerifiedAccount(value: string) { verifiedAccount = value; } };
 }
@@ -87,7 +96,7 @@ describe("host Codex OAuth ceremony", () => {
     expect(f.ceremony.isPending()).toBe(true);
     const url = new URL(f.browserUrl());
     expect((await f.callback(f.validParams(url))).status).toBe(200);
-    expect(f.ceremony.takeTokens()?.accountId).toBe("account-1");
+    expect(f.completedHandoff()?.accountId).toBe("account-1");
   });
 
   it("cancels a start before listen without opening the browser", async () => {
@@ -106,6 +115,9 @@ describe("host Codex OAuth ceremony", () => {
     expect(url.searchParams.get("redirect_uri")).toBe(f.redirectUri);
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("id_token_add_organizations")).toBe("true");
+    expect(url.searchParams.get("codex_cli_simplified_flow")).toBe("true");
+    expect(url.searchParams.get("originator")).toBe("orchestrion");
     expect(url.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const response = await f.callback(f.validParams(url));
     expect(response.status).toBe(200);
@@ -114,10 +126,41 @@ describe("host Codex OAuth ceremony", () => {
     expect(createHash("sha256").update(f.exchanges[0].verifier).digest("base64url"))
       .toBe(url.searchParams.get("code_challenge"));
     expect(f.exchanges[0]).toMatchObject({ code: "synthetic-code", redirectUri: f.redirectUri, clientId: "synthetic-local-client" });
-    expect(f.ceremony.takeTokens()).toEqual({ tokens: { accessToken: "secret-access", refreshToken: "secret-refresh" },
+    expect(f.completedHandoff()).toEqual({ tokens: { accessToken: "secret-access", refreshToken: "secret-refresh" },
       binding, accountId: "account-1" });
     expect(f.ceremony.takeTokens()).toBeNull();
     expect(f.ceremony.isPending()).toBe(false);
+  });
+
+  it("accepts one OpenAI callback scope with the requested tokens in a different order", async () => {
+    const f = await fixture();
+    const url = await f.start();
+    expect(url.searchParams.get("scope")).toBe("openid profile email offline_access");
+    const params = new URLSearchParams({
+      code: "synthetic-code",
+      state: url.searchParams.get("state") ?? "",
+      scope: "openid email offline_access profile",
+    });
+
+    expect((await f.callback(params.toString())).status).toBe(200);
+    expect(f.exchanges).toHaveLength(1);
+  });
+
+  it("rejects mismatched, duplicate, malformed, oversized and unknown callback parameters", async () => {
+    const f = await fixture();
+    const url = await f.start();
+    const state = url.searchParams.get("state") ?? "";
+    const invalid = [
+      `code=synthetic-code&state=${state}&scope=openid%20profile`,
+      `code=synthetic-code&state=${state}&scope=openid%20profile%20email%20offline_access&scope=openid%20profile%20email%20offline_access`,
+      `code=synthetic-code&state=${state}&scope=openid%20%20profile%20email%20offline_access`,
+      `code=synthetic-code&state=${state}&scope=${"x".repeat(257)}`,
+      `code=synthetic-code&state=${state}&unexpected=value`,
+    ];
+
+    for (const params of invalid) expect((await f.callback(params)).status).toBe(400);
+    expect(f.exchanges).toHaveLength(0);
+    expect(f.ceremony.isPending()).toBe(true);
   });
 
   it("rejects wrong path, state, duplicate fields, host and replay without another exchange", async () => {
@@ -128,13 +171,15 @@ describe("host Codex OAuth ceremony", () => {
     expect((await f.callback("code=x&state=wrong")).status).toBe(400);
     expect((await f.callback(`${params}&code=another`)).status).toBe(400);
     expect((await f.callback(params, CODEX_CALLBACK_PATH, "localhost:9999")).status).toBe(400);
+    expect((await f.callback(params, CODEX_CALLBACK_PATH, new URL(f.redirectUri).host.replace("localhost", "127.0.0.1"))).status).toBe(400);
     expect(f.exchanges).toHaveLength(0);
     const first = f.callback(params);
-    const replay = f.callback(params);
+    const replay = f.callback(params).then(value => ({ status: "fulfilled" as const, value }),
+      () => ({ status: "rejected" as const }));
     expect((await first).status).toBe(200);
-    const replayResult = await Promise.allSettled([replay]);
-    expect(replayResult[0].status === "rejected" ||
-      (replayResult[0].status === "fulfilled" && replayResult[0].value.status === 410)).toBe(true);
+    const replayResult = await replay;
+    expect(replayResult.status === "rejected" ||
+      (replayResult.status === "fulfilled" && replayResult.value.status === 410)).toBe(true);
     expect(f.exchanges).toHaveLength(1);
   });
 
@@ -161,6 +206,7 @@ describe("host Codex OAuth ceremony", () => {
     const body = await response.text();
     expect(body).not.toContain("access_denied");
     expect(body).not.toContain("secret-access");
+    expect(f.diagnostics).toEqual([{ stage: "provider_denied" }]);
     expect(f.ceremony.isPending()).toBe(false);
     expect(f.exchanges).toHaveLength(0);
   });
@@ -192,6 +238,7 @@ describe("host Codex OAuth ceremony", () => {
     other.setVerifiedAccount("different-account");
     expect((await other.callback(other.validParams(otherUrl))).status).toBe(403);
     expect(other.ceremony.takeTokens()).toBeNull();
+    expect(other.diagnostics).toEqual([{ stage: "account_verification", reason: "account_mismatch" }]);
   });
 
   it("denies cancellation during exchange and never publishes tokens", async () => {
@@ -225,18 +272,27 @@ describe("host Codex OAuth ceremony", () => {
     }
   });
 
-  it("invalidates a completed host-memory handoff after cancellation or binding switch", async () => {
-    const cancelled = await fixture();
-    const first = await cancelled.start();
-    expect((await cancelled.callback(cancelled.validParams(first))).status).toBe(200);
-    cancelled.ceremony.cancel();
-    expect(cancelled.ceremony.takeTokens()).toBeNull();
+  it("denies a callback when finalization fails and erases its unconsumed handoff", async () => {
+    const f = await fixture({ completeConnection: () => false });
+    const url = await f.start();
+    const response = await f.callback(f.validParams(url));
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("Connection could not be completed");
+    expect(f.ceremony.takeTokens()).toBeNull();
+    expect(f.diagnostics).toEqual([{ stage: "credential_connection", reason: "handoff" }]);
+  });
 
-    const switched = await fixture();
-    const second = await switched.start();
-    expect((await switched.callback(switched.validParams(second))).status).toBe(200);
-    switched.setBinding({ ...binding, accountId: "another-account" });
-    expect(switched.ceremony.takeTokens()).toBeNull();
+  it("denies a binding switch at the host persistence boundary", async () => {
+    let switchBinding!: () => void;
+    const f = await fixture({ completeConnection: ceremony => {
+      switchBinding();
+      return ceremony.takeTokens() !== null;
+    } });
+    switchBinding = () => f.setBinding({ ...binding, windowId: "other-window" });
+    const url = await f.start();
+    expect((await f.callback(f.validParams(url))).status).toBe(403);
+    expect(f.ceremony.takeTokens()).toBeNull();
+    expect(f.completedHandoff()).toBeNull();
   });
 
   it("returns only generic errors when upstream exchange fails", async () => {
@@ -247,6 +303,32 @@ describe("host Codex OAuth ceremony", () => {
     const body = await response.text();
     expect(body).not.toContain("secret-access");
     expect(body).not.toContain("upstream");
+    expect(f.diagnostics).toEqual([{ stage: "token_exchange", reason: "transport" }]);
     expect(f.ceremony.takeTokens()).toBeNull();
+  });
+
+  it("keeps detailed JWT diagnostics host-only and clears rejected credentials", async () => {
+    const tokens: HostOAuthTokens = { accessToken: "PRIVATE_ACCESS", idToken: "PRIVATE_ID", refreshToken: "PRIVATE_REFRESH" };
+    const diagnostic: CodexOAuthDiagnostic = { stage: "account_verification", reason: "invalid_signed_claims",
+      tokenKind: "identity", rule: "token_account_binding" };
+    const f = await fixture({ exchange: async () => tokens,
+      verifyAccount: async () => { throw new CodexOAuthDiagnosticError(diagnostic); } });
+    const url = await f.start();
+    const response = await f.callback(f.validParams(url));
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Authorization denied. Return to Orchestrion.");
+    expect(f.diagnostics).toEqual([diagnostic]);
+    expect(JSON.stringify(f.diagnostics)).not.toContain("PRIVATE_");
+    expect(tokens).toEqual({ accessToken: "", idToken: undefined, refreshToken: undefined });
+    expect(f.ceremony.takeTokens()).toBeNull();
+  });
+
+  it("classifies binding lapses without including binding identifiers", async () => {
+    const f = await fixture();
+    const url = await f.start();
+    f.setBinding({ ...binding, windowId: "private-window-id" });
+    expect((await f.callback(f.validParams(url))).status).toBe(403);
+    expect(f.diagnostics).toEqual([{ stage: "local_binding", checkpoint: "callback" }]);
+    expect(JSON.stringify(f.diagnostics)).not.toContain("private-window-id");
   });
 });

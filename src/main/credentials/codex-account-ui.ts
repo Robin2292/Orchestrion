@@ -6,24 +6,37 @@ import { localFailure } from "../../shared/local-contracts";
 import type { HostDocument } from "../background/service";
 import type { CodexAccountConnection } from "./codex-account-connection";
 import type { HostCodexOAuthCeremony, HostOAuthBinding } from "./codex-oauth-ceremony";
+import type { CodexOAuthDiagnostic } from "./codex-oauth-diagnostics";
+import type { CredentialRequest } from "../../shared/credential-contracts";
 
 type Ports = {
   ceremony: Pick<HostCodexOAuthCeremony, "begin" | "cancel" | "isPending" | "hasCompleted" | "takeTokens">;
-  connection: Pick<CodexAccountConnection, "connect" | "inspect" | "disconnectStored">;
+  connection: Pick<CodexAccountConnection, "connect" | "inspect" | "disconnectStored">
+    | ((document: HostDocument) => Pick<CodexAccountConnection, "connect" | "inspect" | "disconnectStored">);
+  refresh?: (document: HostDocument, pin: CredentialRequest) => Promise<void>;
+  refreshDue?: (document: HostDocument, pin: CredentialRequest) => boolean;
+  recover?: (document: HostDocument) => void;
+  prepareStart?: (document: HostDocument) => void;
   readBinding: (documentId: string) => HostOAuthBinding | null;
   readVerifiedAccount: () => string | null;
+  reportFailure?: (diagnostic: CodexOAuthDiagnostic) => void;
 };
 const unavailable = (): CodexAccountUiValue => ({ availability: "unavailable", state: "unavailable",
   accountDisplay: null, executionReady: false });
 const disconnected = (): CodexAccountUiValue => ({ availability: "available", state: "disconnected",
   accountDisplay: null, executionReady: false });
 
-/** One utility-host owner. No OAuth registration is installed in the shipping app.
- * A future registration must supply all trusted ports together. */
+/** One utility-host owner. All trusted ports are supplied together. */
 export class CodexAccountUiService {
   private pendingOwner: string | null = null;
   constructor(private readonly store: SqliteFoundation, private readonly connectorId: string,
     private readonly ports: Ports | null = null) {}
+
+  private connection(document: HostDocument) {
+    if (!this.ports) throw new Error("CODEX_OAUTH_UNAVAILABLE");
+    return typeof this.ports.connection === "function"
+      ? this.ports.connection(document) : this.ports.connection;
+  }
 
   private authorized(document: HostDocument, projectId: string): boolean {
     if (!document.isActive() || !this.ports) return false;
@@ -51,10 +64,12 @@ export class CodexAccountUiService {
   private snapshot(document: HostDocument, projectId: string): CodexAccountUiValue {
     if (!this.ports) return unavailable();
     if (!this.authorized(document, projectId)) return unavailable();
+    if (this.pendingOwner === document.id && !this.ports.ceremony.isPending()
+        && !this.ports.ceremony.hasCompleted()) this.pendingOwner = null;
     if (this.pendingOwner === document.id && this.ports.ceremony.isPending())
       return { ...disconnected(), state: "pending" };
     if (this.pendingOwner === document.id && this.ports.ceremony.hasCompleted()) {
-      this.ports.connection.connect(this.ports.ceremony);
+      this.connection(document).connect(this.ports.ceremony);
       this.pendingOwner = null;
     }
     const account = this.ports.readVerifiedAccount();
@@ -62,7 +77,7 @@ export class CodexAccountUiService {
       if (!account) return this.anyLive() ? { ...disconnected(), state: "stale" } : disconnected();
       const rows = this.accountRows(account);
       for (const row of rows.live) if (row.state === "active") {
-        const inspected = this.ports.connection.inspect({ credential_ref: row.ref,
+        const inspected = this.connection(document).inspect({ credential_ref: row.ref,
           connector_id: this.connectorId, revision: row.revision });
         if (inspected.ok && inspected.value.state === "ready")
           return { availability: "available", state: "connected", accountDisplay: "••••",
@@ -79,6 +94,41 @@ export class CodexAccountUiService {
       { org_id: c.org_id, principal: c.principal }, c.project_id, this.connectorId).hasLive());
   }
 
+  /** Called only by the utility host's loopback callback. It commits without a
+   * renderer poll and confirms the same readiness shown by Settings. */
+  completeFromCallback(document: HostDocument, ceremony: Pick<HostCodexOAuthCeremony, "takeTokens">): boolean {
+    if (this.pendingOwner !== document.id || !this.authorized(document, this.store.workspace.project_id)) return false;
+    let published = false;
+    const reportReadinessFailure = () => { try { this.ports?.reportFailure?.({ stage: "credential_connection", reason: "readiness" }); }
+      catch { /* Diagnostics cannot affect credential authority. */ } };
+    try {
+      const connection = this.connection(document);
+      const connected = connection.connect(ceremony);
+      this.pendingOwner = null;
+      if (!connected.ok || connected.value.state !== "ready") return false;
+      published = true;
+      const inspected = connection.inspect({ credential_ref: connected.value.credential_ref,
+        connector_id: connected.value.connector_id, revision: connected.value.revision });
+      const ready = inspected.ok && inspected.value.state === "ready" &&
+        this.snapshot(document, this.store.workspace.project_id).state === "connected";
+      if (!ready) reportReadinessFailure();
+      return ready;
+    } catch { if (published) reportReadinessFailure(); return false; }
+    finally { this.pendingOwner = null; }
+  }
+
+  private async refreshIfNeeded(document: HostDocument): Promise<void> {
+    if (!this.ports?.refresh || !this.ports.refreshDue) return;
+    const account = this.ports.readVerifiedAccount();
+    if (!account) return;
+    const rows = this.accountRows(account);
+    const pin = rows.live.find(row => row.state === "active");
+    if (!pin) return;
+    const request = { credential_ref: pin.ref, connector_id: this.connectorId, revision: pin.revision };
+    if (!this.ports.refreshDue(document, request)) return;
+    await this.ports.refresh(document, request);
+  }
+
   async invoke(raw: unknown, document: HostDocument): Promise<unknown> {
     const request = CodexAccountUiRequestSchema.safeParse(raw);
     if (!request.success) return localFailure("INVALID_PAYLOAD");
@@ -88,13 +138,20 @@ export class CodexAccountUiService {
     if (!this.authorized(document, projectId)) { this.revoke(document.id); return localFailure("NOT_AUTHENTICATED"); }
     try {
       switch (request.data.operation) {
-        case "read": break;
+        case "read":
+          if (!this.ports.ceremony.isPending() && !this.ports.ceremony.hasCompleted()) {
+            this.ports.recover?.(document);
+            await this.refreshIfNeeded(document);
+          }
+          break;
         case "start":
           // Existing active or pending material must be disconnected/repaired
           // before another sign-in, even if the newest row is stale.
-          if (this.pendingOwner || this.anyLive()) break;
+          if (this.pendingOwner) break;
+          this.ports.recover?.(document);
+          if (this.anyLive()) break;
           this.pendingOwner = document.id;
-          try { await this.ports.ceremony.begin(true); }
+          try { this.ports.prepareStart?.(document); await this.ports.ceremony.begin(true); }
           catch { this.pendingOwner = null; return { ok: true, value: unavailable() }; }
           if (!this.authorized(document, projectId)) { this.revoke(document.id); return localFailure("NOT_AUTHENTICATED"); }
           break;
@@ -105,7 +162,7 @@ export class CodexAccountUiService {
           const current = this.snapshot(document, projectId);
           if (current.state !== "connected" && current.state !== "stale") break;
           if (!this.authorized(document, projectId)) return localFailure("NOT_AUTHENTICATED");
-          this.ports.connection.disconnectStored();
+          this.connection(document).disconnectStored();
           break;
         }
       }

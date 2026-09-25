@@ -5,14 +5,17 @@ import { LocalDirectSessionErrorCodeSchema, LocalDirectSessionReplySchema,
   type LocalDirectSessionReply } from "../shared/direct-session-ui-contracts";
 import { StorageError } from "../storage/sqlite/foundation";
 import { DirectSessionService } from "./service";
+import type { HostDocument } from "../main/background/service";
+import type { DirectCodexTurnService } from "./codex-turn";
 
 const failure=(code:z.infer<typeof LocalDirectSessionErrorCodeSchema>):LocalDirectSessionReply=>
   ({ok:false,error:{code,retryable:false}});
 
 /** Renderer cannot supply principal, runtime owner or execution binding. */
 export class LocalDirectSessionUiEndpoint {
-  constructor(private readonly resolve:()=>DirectSessionService|null) {}
-  async invoke(raw:unknown,isActive:()=>boolean):Promise<LocalDirectSessionReply> {
+  constructor(private readonly resolve:()=>DirectSessionService|null,
+    private readonly turn?: (document:HostDocument)=>{service:DirectCodexTurnService;signal:AbortSignal;release():void}) {}
+  async invoke(raw:unknown,isActive:()=>boolean,document?:HostDocument):Promise<LocalDirectSessionReply> {
     const parsed=LocalDirectSessionRequestSchema.safeParse(raw);
     if (!parsed.success) return failure("INVALID_PAYLOAD");
     if (!isActive()) return failure("NOT_AUTHENTICATED");
@@ -42,6 +45,22 @@ export class LocalDirectSessionUiEndpoint {
           session:row?.provenance==="released" ? {...projectSession(row),deleted:row.deleted_at!==null,
             deleting:row.deletion_state==="pending" && row.deleted_at===null} : null,
         })});
+      }
+      if (request.operation==="history" || request.operation==="turn") {
+        if(!document||!this.turn)return failure("DIRECT_PROVIDER_UNAVAILABLE");
+        const port=this.turn(document);
+        try {
+          if(request.operation==="history")return LocalDirectSessionReplySchema.parse({ok:true,
+            value:{kind:"history",items:port.service.history(request.sessionId)}});
+          if(!isActive())return failure("NOT_AUTHENTICATED");
+          invoked=true;
+          const result=await port.service.run({sessionId:request.payload.sessionId,
+            prompt:request.payload.prompt,expected:request.expected,
+            requestId:request.requestId,idempotencyKey:request.idempotencyKey},port.signal);
+          if(!isActive())return failure("OUTCOME_UNKNOWN");
+          return LocalDirectSessionReplySchema.parse({ok:true,value:{kind:"turn",
+            expected:s.authority().expected,...result}});
+        } finally {port.release();}
       }
       const header={...s.authority(),expected:request.expected,schema_version:LOCAL_CONTRACT_VERSION,
         request_id:request.requestId,idempotency_key:request.idempotencyKey};
