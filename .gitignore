@@ -8,3 +8,9 @@ coverage/
 .env
 .env.*
 !.env.example
+*.provisionprofile
+*.mobileprovision
+*.p12
+*.p8
+*.pem
+*.key

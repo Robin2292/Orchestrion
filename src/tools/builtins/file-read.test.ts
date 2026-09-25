@@ -134,7 +134,7 @@ describe("EP1-B reviewed built-in file.read", () => {
   it("redacts refusals to a closed code and fixed text", () => {
     expect(governedRefusal("FILE_READ_SENSITIVE_PATH")).toEqual({ success: false, contentItems: [{ type: "inputText", text: expect.stringMatching(/^FILE_READ_SENSITIVE_PATH: /) }] });
     expect(governedRefusal("EXECUTION_OWNER_STALE").contentItems[0].text).toContain("start a new session");
-    expect(() => governedRefusal("/Users/robin/secret")).toThrow();
+    expect(() => governedRefusal("/Users/example/secret")).toThrow();
     expect(() => governedRefusal("lower_case")).toThrow();
     expect(SessionGovernanceSchema.safeParse({ attemptId: "a", threadId: "t", tools: ["file.read"], declaredAt: "2026-09-15T00:00:00.000Z" }).success).toBe(true);
     expect(SessionGovernanceSchema.safeParse({ attemptId: "a", threadId: "t", tools: ["bash"], declaredAt: "2026-09-15T00:00:00.000Z" }).success).toBe(false);
