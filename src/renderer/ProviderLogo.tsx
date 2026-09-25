@@ -9,7 +9,8 @@ interface BrandLogo {
   path: string;
 }
 
-// Optimized brand paths from https://github.com/lobehub/lobe-icons. Keeping
+// Optimized brand paths from https://github.com/lobehub/lobe-icons.
+// LobeHub MIT copyright and license text: THIRD_PARTY_NOTICES.md. Keeping
 // the small paths local makes the picker work offline without pulling an icon
 // system into the desktop app.
 const BRAND_LOGOS: Readonly<Record<string, BrandLogo>> = {

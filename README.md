@@ -34,4 +34,4 @@ The app must pass signature, notarization, Gatekeeper, installer, and old-versio
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). This repository's license covers its own source; dependencies retain their respective licenses.
+Apache-2.0. See [LICENSE](LICENSE). This repository's license covers its own source; dependencies retain their respective licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for copied brand icon attribution.
