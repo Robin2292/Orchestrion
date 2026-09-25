@@ -36,7 +36,7 @@ pnpm dist:signed:check
 pnpm dist:signed
 ```
 
-Public builds are available from [GitHub Releases](https://github.com/Robin2292/Orchestrion/releases). Versions 0.1.0 and 0.1.1 have a packaged updater startup defect and cannot update themselves; install a newer DMG manually. A successful local signed build proves the local artifact checks. The in-app update path also requires an anonymous feed and a real old-version-to-new-version installation test.
+Public builds are available from [GitHub Releases](https://github.com/Robin2292/Orchestrion/releases). Versions 0.1.0 and 0.1.1 have a packaged updater startup defect and cannot update themselves; install a newer DMG manually. Version 0.1.2 detects and downloads 0.1.3 from the public feed, but the tested “Restart to update” action did not complete installation. Until that installation path is fixed and verified, use the latest DMG for upgrades. Signed builds and local package checks do not establish that in-app installation works.
 
 ## License
 
