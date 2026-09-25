@@ -85,6 +85,8 @@ describe("desktop release rehearsal gates", () => {
       gatekeeperAccepted: true, repositoryVisibility: "PUBLIC",
     });
     assert.equal(calls.filter(call => call[0] === "xcrun").length, 2);
+    assert.ok(calls.some(call => call[0] === "spctl" && call.includes("open") && call.includes(expected.dmg)));
+    assert.ok(calls.some(call => call[0] === "node" && call[1] === "scripts/packaged-keychain-smoke.cjs"));
     assert.throws(() => verifyDistributionPrerequisites(expected, (file, args) => file === "codesign" && args[0] === "-dv" ? "Authority=Ad Hoc" : "PUBLIC"), /Developer ID/);
     assert.throws(() => verifyDistributionPrerequisites(expected, (file, args) => file === "gh" ? "PRIVATE" : run(file, args)), /must be PUBLIC/);
   });

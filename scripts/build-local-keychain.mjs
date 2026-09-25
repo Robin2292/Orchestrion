@@ -44,6 +44,31 @@ function xmlEscape(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+export function signProvisionedApp({ app, profilePath, identity, team, timestamp = true }) {
+  const helper = join(app, "Contents/Frameworks/Orchestrion Helper.app");
+  const helperBundleId = capture("/usr/libexec/PlistBuddy", ["-c", "Print CFBundleIdentifier", join(helper, "Contents/Info.plist")]).trim();
+  if (helperBundleId !== helperId) throw new Error("Packaged utility helper bundle ID changed.");
+  copyFileSync(profilePath, join(helper, "Contents/embedded.provisionprofile"));
+  const temporary = mkdtempSync(join(tmpdir(), "orchestrion-keychain-sign-"));
+  try {
+    const entitlements = join(temporary, "helper-entitlements.plist");
+    writeFileSync(entitlements, `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>
+<key>com.apple.application-identifier</key><string>${xmlEscape(`${team}.${helperId}`)}</string>
+<key>com.apple.developer.team-identifier</key><string>${xmlEscape(team)}</string>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict></plist>\n`);
+    const stamp = timestamp ? "--timestamp" : "--timestamp=none";
+    run("codesign", ["--force", "--sign", identity, "--options", "runtime", stamp,
+      "--entitlements", entitlements, helper]);
+    run("codesign", ["--force", "--sign", identity, "--options", "runtime", stamp,
+      "--entitlements", "build/entitlements.mac.plist", app]);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+  run("codesign", ["--verify", "--deep", "--strict", app]);
+}
+
 async function main() {
   assertSupportedNodeVersion();
   if (process.platform !== "darwin" || process.arch !== "arm64") throw new Error("Requires arm64 macOS.");
@@ -93,27 +118,7 @@ print(json.dumps({
     `--config.directories.output=${output}`]);
 
   const app = join(output, "mac-arm64", "Orchestrion.app");
-  const helper = join(app, "Contents/Frameworks/Orchestrion Helper.app");
-  const helperBundleId = capture("/usr/libexec/PlistBuddy", ["-c", "Print CFBundleIdentifier", join(helper, "Contents/Info.plist")]).trim();
-  if (helperBundleId !== helperId) throw new Error("Packaged utility helper bundle ID changed.");
-  copyFileSync(profilePath, join(helper, "Contents/embedded.provisionprofile"));
-  const temporary = mkdtempSync(join(tmpdir(), "orchestrion-keychain-sign-"));
-  try {
-    const entitlements = join(temporary, "helper-entitlements.plist");
-    writeFileSync(entitlements, `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>
-<key>com.apple.application-identifier</key><string>${xmlEscape(`${team}.${helperId}`)}</string>
-<key>com.apple.developer.team-identifier</key><string>${xmlEscape(team)}</string>
-<key>com.apple.security.cs.allow-jit</key><true/>
-<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
-</dict></plist>\n`);
-    run("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp=none",
-      "--entitlements", entitlements, helper]);
-    run("codesign", ["--force", "--sign", identity, "--options", "runtime", "--timestamp=none",
-      "--entitlements", "build/entitlements.mac.plist", app]);
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
-  }
-  run("codesign", ["--verify", "--deep", "--strict", app]);
+  signProvisionedApp({ app, profilePath, identity, team, timestamp: false });
   run("node", ["scripts/packaged-keychain-smoke.cjs", app]);
   process.stdout.write(`LOCAL_KEYCHAIN_PACKAGE_PASS ${app}\n`);
 }

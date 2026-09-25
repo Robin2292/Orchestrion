@@ -21,7 +21,7 @@ Run `pnpm typecheck`, `pnpm test`, `pnpm test:signing`, and `pnpm build` to chec
 
 `pnpm dist` creates a local unsigned macOS arm64 DMG and ZIP. An unsigned package is only for development. The credential adapter runs in `Orchestrion Helper.app` and requires a Developer ID provisioning profile for the exact `com.orchestrion.desktop.helper` bundle ID. Keep that profile outside the repository. Use `pnpm dist:local-keychain:check` and `pnpm dist:local-keychain` to verify a signed local app and its Keychain access without publishing it.
 
-`pnpm dist:signed:check` checks a Developer ID Application identity and Apple notarization credentials on the build Mac. `pnpm dist:signed` creates signed artifacts and submits the app for notarization; it does not create a GitHub Release. The current signed distribution flow has not yet embedded the helper profile or notarized the DMG, so these artifacts are not public-release ready.
+`pnpm dist:signed:check` checks the Developer ID Application identity, exact Helper profile, and notarization Keychain profile on the build Mac. `pnpm dist:signed` embeds the Helper profile, signs and notarizes the App and DMG, refreshes `latest-mac.yml` after DMG stapling, and checks the packaged Keychain adapter and Gatekeeper. It does not create a GitHub Release. Use a fresh `dist-signed/` directory for each build.
 
 The signing certificate and private key must be installed in macOS Keychain. A `notarytool` app-specific-password profile can be stored there and selected using `APPLE_KEYCHAIN_PROFILE`; the password stays in Keychain. Do not commit credentials or place passwords in command arguments.
 
@@ -34,7 +34,7 @@ pnpm dist:signed:check
 pnpm dist:signed
 ```
 
-The app must pass signature, notarization, Gatekeeper, installer, and old-version-to-new-version update checks before a public Release. The DMG still needs its own stapled notarization ticket. No public Release is available yet.
+The app must pass signature, notarization, Gatekeeper, installer, anonymous feed, and old-version-to-new-version update checks before a public Release. A successful local signed build proves only the local artifact checks. No public Release is available yet.
 
 ## License
 

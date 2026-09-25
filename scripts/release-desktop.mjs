@@ -103,10 +103,15 @@ export function verifyDistributionPrerequisites(expected, run = command) {
   const signature = run("codesign", ["-dv", "--verbose=4", expected.app]);
   assert.match(signature, /Authority=Developer ID Application:/, "Developer ID signature evidence is required");
   assert.match(signature, /TeamIdentifier=[A-Z0-9]+/, "Signing team evidence is required");
+  const dmgSignature = run("codesign", ["-dv", "--verbose=4", expected.dmg]);
+  assert.match(dmgSignature, /Authority=Developer ID Application:/, "DMG Developer ID signature evidence is required");
   run("codesign", ["--verify", "--deep", "--strict", expected.app]);
+  run("codesign", ["--verify", "--strict", expected.dmg]);
   run("xcrun", ["stapler", "validate", expected.app]);
   run("xcrun", ["stapler", "validate", expected.dmg]);
   run("spctl", ["--assess", "--type", "execute", "--verbose=4", expected.app]);
+  run("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", expected.dmg]);
+  run("node", ["scripts/packaged-keychain-smoke.cjs", expected.app]);
   const visibility = run("gh", ["repo", "view", expected.repo, "--json", "visibility", "--jq", ".visibility"]);
   assert.equal(visibility.toUpperCase(), "PUBLIC", "Configured GitHub repository must be PUBLIC; anonymous Release asset access needs separate verification");
   return { developerIdSignatureVerified: true, appStapleValidated: true, dmgStapleValidated: true, gatekeeperAccepted: true, repositoryVisibility: "PUBLIC" };

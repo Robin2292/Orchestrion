@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { validateSignedBuildEnvironment } from "./build-signed-mac.mjs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { refreshDmgMetadata, validateSignedBuildEnvironment } from "./build-signed-mac.mjs";
 
 const identity = "Developer ID Application: Example Company (ABCDE12345)";
 const ready = {
@@ -64,5 +68,25 @@ test("signed config preserves unsigned development config and forbids unsigned s
   } finally {
     if (previous === undefined) delete process.env.ORCHESTRION_MAC_SIGN_IDENTITY;
     else process.env.ORCHESTRION_MAC_SIGN_IDENTITY = previous;
+  }
+});
+
+test("DMG signing and stapling refresh only its update digest and size", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "orchestrion-dmg-metadata-"));
+  try {
+    const dmg = join(folder, "Orchestrion-0.1.0-arm64.dmg");
+    const metadata = join(folder, "latest-mac.yml");
+    await writeFile(dmg, "signed and stapled DMG bytes");
+    await writeFile(metadata, "version: 0.1.0\nfiles:\n  - url: Orchestrion-0.1.0-arm64.zip\n    sha512: zip-digest\n    size: 10\n  - url: Orchestrion-0.1.0-arm64.dmg\n    sha512: stale-digest\n    size: 9\npath: Orchestrion-0.1.0-arm64.zip\nsha512: zip-digest\nreleaseDate: '2026-09-25T00:00:00.000Z'\n");
+    await refreshDmgMetadata(metadata, dmg);
+    const result = await readFile(metadata, "utf8");
+    const digest = createHash("sha512").update("signed and stapled DMG bytes").digest("base64");
+    assert.ok(result.includes(`  - url: Orchestrion-0.1.0-arm64.dmg\n    sha512: ${digest}\n    size: ${Buffer.byteLength("signed and stapled DMG bytes")}`));
+    assert.match(result, /  - url: Orchestrion-0\.1\.0-arm64\.zip\n    sha512: zip-digest\n    size: 10/);
+    assert.match(result, /path: Orchestrion-0\.1\.0-arm64\.zip\nsha512: zip-digest/);
+    await writeFile(metadata, "version: 0.1.0\nfiles:\n");
+    await assert.rejects(() => refreshDmgMetadata(metadata, dmg), /expected DMG asset/);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
   }
 });
