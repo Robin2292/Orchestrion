@@ -79,6 +79,10 @@ export async function verifyArtifacts(expected, run = command) {
   assert.ok((await lstat(expected.app)).isDirectory(), "Packaged .app is missing");
   const appVersion = run("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", join(expected.app, "Contents/Info.plist")]);
   assert.equal(appVersion, expected.tag.slice("desktop-v".length), "Packaged app version differs from release version");
+  const [owner, repo] = expected.repo.split("/");
+  const updateConfig = await readFile(join(expected.app, "Contents/Resources/app-update.yml"), "utf8");
+  assert.equal(updateConfig, `provider: github\nowner: ${owner}\nrepo: ${repo}\n`,
+    "Packaged app update feed differs from the public release repository");
   const lines = (await readFile(expected.metadata, "utf8")).trimEnd().split(/\r?\n/);
   let line = 0;
   assert.equal(lines[line++], `version: ${appVersion}`, "Update metadata version differs from packaged app");

@@ -23,6 +23,8 @@ Run `pnpm typecheck`, `pnpm test`, `pnpm test:signing`, and `pnpm build` to chec
 
 `pnpm dist:signed:check` checks the Developer ID Application identity, exact Helper profile, and notarization Keychain profile on the build Mac. `pnpm dist:signed` embeds the Helper profile, signs and notarizes the App and DMG, refreshes `latest-mac.yml` after DMG stapling, and checks the packaged Keychain adapter and Gatekeeper. It does not create a GitHub Release. Use a fresh `dist-signed/` directory for each build.
 
+The packaged app carries `build/app-update.yml`, pointing to the public `Robin2292/Orchestrion` release feed. The release verifier checks that this embedded feed matches `package.json` before an artifact can be published. Keep both files in sync if the release repository changes.
+
 The signing certificate and private key must be installed in macOS Keychain. A `notarytool` app-specific-password profile can be stored there and selected using `APPLE_KEYCHAIN_PROFILE`; the password stays in Keychain. Do not commit credentials or place passwords in command arguments.
 
 ```sh

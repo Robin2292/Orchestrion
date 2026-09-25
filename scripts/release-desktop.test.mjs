@@ -41,7 +41,9 @@ describe("desktop release rehearsal gates", () => {
 
   it("verifies both assets, top-level ZIP fields, package version, and native smoke", async () => {
     const folder = await mkdtemp(join(tmpdir(), "desktop-release-test-")); folders.push(folder);
-    const app = join(folder, "Orchestrion.app"); await mkdir(app);
+    const app = join(folder, "Orchestrion.app"); await mkdir(join(app, "Contents/Resources"), { recursive: true });
+    const appUpdate = join(app, "Contents/Resources/app-update.yml");
+    await writeFile(appUpdate, "provider: github\nowner: Example\nrepo: Orchestrion\n");
     const zip = join(folder, "Orchestrion-1.2.3-arm64.zip");
     const dmg = join(folder, "Orchestrion-1.2.3-arm64.dmg");
     const metadata = join(folder, "latest-mac.yml");
@@ -55,6 +57,9 @@ describe("desktop release rehearsal gates", () => {
     const run = (file, args) => { calls.push([file, ...args]); return file === "plutil" ? "1.2.3" : ""; };
     await verifyArtifacts(expected, run);
     assert.ok(calls.some(call => call[0] === "node" && call[1] === "scripts/verify-packaged-app.mjs" && call[2] === app));
+    await writeFile(appUpdate, "provider: github\nowner: Example\nrepo: Other\n");
+    await assert.rejects(() => verifyArtifacts(expected, run), /update feed/);
+    await writeFile(appUpdate, "provider: github\nowner: Example\nrepo: Orchestrion\n");
     for (const [malformed, reason] of [
       [validMetadata.replace("Orchestrion-1.2.3-arm64.dmg", "other.dmg"), /asset name/],
       [validMetadata.replace(dmgDigest, "wronghash"), /checksum/],
