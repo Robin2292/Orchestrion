@@ -21,7 +21,7 @@ Run `pnpm typecheck`, `pnpm test`, `pnpm test:signing`, and `pnpm build` to chec
 
 `pnpm dist` creates a local unsigned macOS arm64 DMG and ZIP. An unsigned package is only for development. The credential adapter runs in `Orchestrion Helper.app` and requires a Developer ID provisioning profile for the exact `com.orchestrion.desktop.helper` bundle ID. Keep that profile outside the repository. Use `pnpm dist:local-keychain:check` and `pnpm dist:local-keychain` to verify a signed local app and its Keychain access without publishing it.
 
-`pnpm dist:signed:check` checks the Developer ID Application identity, exact Helper profile, and notarization Keychain profile on the build Mac. `pnpm dist:signed` embeds the Helper profile, signs and notarizes the App and DMG, refreshes `latest-mac.yml` after DMG stapling, and checks the packaged Keychain adapter and Gatekeeper. It does not create a GitHub Release. Use a fresh `dist-signed/` directory for each build.
+`pnpm dist:signed:check` checks the Developer ID Application identity, exact Helper profile, and notarization Keychain profile on the build Mac. `pnpm dist:signed` embeds the Helper profile, signs and notarizes the App and DMG, refreshes `latest-mac.yml` after DMG stapling, and checks the packaged Keychain adapter, updater startup, and Gatekeeper. It does not create a GitHub Release. Use a fresh `dist-signed/` directory for each build.
 
 The packaged app carries `build/app-update.yml`, pointing to the public `Robin2292/Orchestrion` release feed. The release verifier checks that this embedded feed matches `package.json` before an artifact can be published. Keep both files in sync if the release repository changes.
 
@@ -36,7 +36,7 @@ pnpm dist:signed:check
 pnpm dist:signed
 ```
 
-The app must pass signature, notarization, Gatekeeper, installer, anonymous feed, and old-version-to-new-version update checks before a public Release. A successful local signed build proves only the local artifact checks. No public Release is available yet.
+Public builds are available from [GitHub Releases](https://github.com/Robin2292/Orchestrion/releases). Versions 0.1.0 and 0.1.1 have a packaged updater startup defect and cannot update themselves; install a newer DMG manually. A successful local signed build proves the local artifact checks. The in-app update path also requires an anonymous feed and a real old-version-to-new-version installation test.
 
 ## License
 

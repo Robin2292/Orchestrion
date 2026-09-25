@@ -161,6 +161,7 @@ async function main() {
   await command("xcrun", ["stapler", "validate", dmg]);
   await command("node", ["scripts/verify-packaged-app.mjs", app]);
   await command("node", ["scripts/packaged-keychain-smoke.cjs", app]);
+  await command("node", ["scripts/packaged-launch-smoke.mjs", app, "--check-updater"]);
   await command("spctl", ["--assess", "--type", "execute", app]);
   await command("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", dmg]);
   process.stdout.write("Signed app and DMG passed signature and stapled-ticket checks. Both were submitted to Apple; nothing was published to GitHub.\n");
