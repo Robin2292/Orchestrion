@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "tool_source_catalog@1",
+  "authority": "none",
+  "orgId": "org-fixture",
+  "sources": [
+    {
+      "namespace": "mcp.fixture",
+      "kind": "mcp",
+      "label": "Fixture MCP",
+      "authority": "none",
+      "connections": [
+        {
+          "selection": {
+            "connection": null,
+            "executionTarget": {
+              "kind": "runner",
+              "id": "runner-fixture",
+              "placement": "remote_self_hosted",
+              "workspaceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          "label": "Fixture account",
+          "state": "accepted",
+          "reasonCode": "FIXTURE_ACCEPTED",
+          "credentialReadiness": "ready",
+          "review": {
+            "latestSnapshotId": "snapshot-2",
+            "acceptedSnapshotId": "snapshot-1",
+            "acceptedContentDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "latestContentDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "publishedRevision": 2,
+            "activeRevision": 1,
+            "rollbackRevision": null
+          },
+          "drift": {
+            "content": true,
+            "schema": false,
+            "executor": false,
+            "contract": true,
+            "requiresReview": true,
+            "requiresPublish": true
+          },
+          "tools": [
+            {
+              "catalogId": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "identity": {
+                "source": "mcp.fixture",
+                "key": "lookup"
+              },
+              "selection": {
+                "connection": null,
+                "executionTarget": {
+                  "kind": "runner",
+                  "id": "runner-fixture",
+                  "placement": "remote_self_hosted",
+                  "workspaceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              },
+              "metadata": {
+                "name": "fixture.lookup",
+                "description": "Descriptive metadata only",
+                "namespace": "mcp.fixture",
+                "inputSchema": { "type": "object" },
+                "outputSchema": null,
+                "claimedEffects": ["read"],
+                "claimedRisk": "low",
+                "annotations": { "readOnlyHint": true },
+                "trust": "untrusted",
+                "metadataDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+              },
+              "state": "quarantined",
+              "reasonCode": "FIXTURE_CONTENT_DRIFT",
+              "authority": "none",
+              "contract": {
+                "versionId": "contract-v1",
+                "contractHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "schemaHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "executorHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "declaredEffects": ["read"],
+                "physicalReadonlyProven": false
+              },
+              "drift": {
+                "content": true,
+                "schema": false,
+                "executor": false,
+                "contract": true,
+                "requiresReview": true,
+                "requiresPublish": true
+              },
+              "grantReadiness": "needs_review"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

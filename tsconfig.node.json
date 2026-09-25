@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "noEmit": true
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "vitest.config.ts",
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/storage/**/*.ts",
+    "src/services/credential-metadata.ts",
+    "src/jobs/**/*.ts",
+    "src/realtime/**/*.ts",
+    "src/agents/**/*.ts",
+    "src/assignments/**/*.ts",
+    "src/direct-sessions/**/*.ts",
+    "src/direct-grant-ceilings/**/*.ts",
+    "src/budgets/**/*.ts",
+    "src/grants/**/*.ts",
+    "src/sources/**/*.ts",
+    "src/tools/**/*.ts",
+    "src/policies/**/*.ts",
+    "src/connectors/**/*.ts",
+    "src/invocations/**/*.ts",
+    "src/providers/**/*.ts",
+    "src/web-compat/**/*.ts"
+  ]
+}

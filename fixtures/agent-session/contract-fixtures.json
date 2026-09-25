@@ -1,0 +1,270 @@
+{
+  "schemaVersion": "orchestrion.agent-session.v1",
+  "invalidHashNumbers": [9007199254740992.0, 1e21],
+  "invalidWireTimestamps": [
+    "2026-09-20T00:00:00+00:00",
+    "2026-09-20T00:00:00.000Z",
+    "2026-09-20T00:00:00.120Z",
+    "2026-09-20T00:00:00",
+    "2026-09-20 00:00:00Z"
+  ],
+  "valid": {
+    "agentIdentity": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "agent-1",
+      "orgId": "org-1",
+      "name": "Release reviewer",
+      "visibility": "organization",
+      "homeProjectId": "project-1",
+      "derivedFromAgentVersionId": "agent-version-template-1",
+      "agentPrincipal": { "type": "agent", "id": "principal-agent-1" }
+    },
+    "assignment": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "assignment-1",
+      "orgId": "org-1",
+      "projectId": "project-1",
+      "agentId": "agent-1",
+      "currentAssignmentVersionId": "assignment-version-1",
+      "status": "active"
+    },
+    "assignmentVersion": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "assignment-version-1",
+      "orgId": "org-1",
+      "assignmentId": "assignment-1",
+      "revision": 1,
+      "agentVersionId": "agent-version-1",
+      "parameterValues": { "repository": "orchestrion", "smallNumber": 1e-7 },
+      "connectionBindings": [
+        { "connectionId": "connection-1", "sourceId": "github", "scope": "repo:read" }
+      ],
+      "credentialReferences": [
+        { "credentialId": "credential-1", "connectionId": "connection-1", "purpose": "repository_read" }
+      ],
+      "workspaceScope": { "mode": "project", "pathPrefixes": [] },
+      "policyReferences": ["policy-1"],
+      "dataScope": { "domains": ["release"], "resourceReferences": ["repo:orchestrion"] },
+      "authorityCeiling": {
+        "organizationCeilingHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "principalGrantHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "agentVersionGrantHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "directGrantVersionIds": ["tool-grant-version-1"]
+      },
+      "memoryScopeCeiling": {
+        "projectId": "project-1",
+        "allowedWorkflowIds": ["workflow-1"],
+        "allowedDataDomains": ["release"],
+        "projectPromotionAllowed": true,
+        "organizationPromotionAllowed": false
+      },
+      "placementConstraints": {
+        "allowed": ["local_trusted"],
+        "fallback": "forbidden"
+      },
+      "budgetCeilings": { "modelTokens": 120000, "toolCalls": 40, "costUsd": 25.0 },
+      "resolvedConfigHash": "sha256:66cdc4c356fe15de0144c3980b6a758f7b17d4ef9e36eaa130c51a0aa08de606",
+      "authorityCeilingHash": "sha256:87ac307e81948d66a31a925ec1c8f9fe312b86dfcd458e865144dac0feff19f3",
+      "memoryScopeHash": "sha256:3bb039bb452d8e8630242a7ef0a73b3423b1103a550c7059deb342ff2d33084c",
+      "createdAt": "2026-09-20T00:00:00Z",
+      "createdByPrincipalId": "principal-user-1"
+    },
+    "workflowRoleBinding": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "role-binding-1",
+      "orgId": "org-1",
+      "projectId": "project-1",
+      "workflowVersionId": "workflow-version-1",
+      "roleKey": "reviewer",
+      "subject": {
+        "type": "agent",
+        "agentId": "agent-1",
+        "agentVersionId": "agent-version-1",
+        "assignmentId": "assignment-1",
+        "assignmentVersionId": "assignment-version-1",
+        "agentPrincipal": { "type": "agent", "id": "principal-agent-1" },
+        "resolvedConfigHash": "sha256:66cdc4c356fe15de0144c3980b6a758f7b17d4ef9e36eaa130c51a0aa08de606"
+      },
+      "duty": "reviewer",
+      "separationOfDuty": { "mustDifferFromRoleKeys": ["implementer", "approver"] }
+    },
+    "directSession": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "session-direct-1",
+      "orgId": "org-1",
+      "projectId": "project-1",
+      "agentId": "agent-1",
+      "agentPrincipal": { "type": "agent", "id": "principal-agent-1" },
+      "initiatedBy": { "type": "human", "id": "principal-user-1" },
+      "materializedBy": { "type": "system", "id": "principal-runtime-1" },
+      "archivedAt": null,
+      "source": "direct",
+      "lifecycle": "active",
+      "memoryScope": { "type": "direct", "projectId": "project-1", "sessionId": "session-direct-1", "sharing": "session_only" },
+      "binding": {
+        "provenance": "released",
+        "agentVersionId": "agent-version-1",
+        "projectAgentAssignmentId": "assignment-1",
+        "assignmentVersionId": "assignment-version-1",
+        "resolvedConfigHash": "sha256:66cdc4c356fe15de0144c3980b6a758f7b17d4ef9e36eaa130c51a0aa08de606"
+      }
+    },
+    "legacyDirectSession": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "session-legacy-1",
+      "orgId": "org-1",
+      "projectId": "project-1",
+      "agentId": "legacy-agent-1",
+      "agentPrincipal": null,
+      "initiatedBy": null,
+      "materializedBy": null,
+      "archivedAt": "2026-09-20T00:00:00Z",
+      "source": "direct",
+      "lifecycle": "archived",
+      "memoryScope": { "type": "direct", "projectId": "project-1", "sessionId": "session-legacy-1", "sharing": "session_only" },
+      "binding": {
+        "provenance": "legacy_unversioned",
+        "agentVersionId": null,
+        "projectAgentAssignmentId": null,
+        "assignmentVersionId": null,
+        "resolvedConfigHash": null,
+        "originalThreadId": "thread-legacy-1",
+        "legacyConfigurationEvidence": { "model": "historical-model" }
+      }
+    },
+    "workflowSession": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "session-workflow-1",
+      "orgId": "org-1",
+      "projectId": "project-1",
+      "agentId": "agent-1",
+      "agentPrincipal": { "type": "agent", "id": "principal-agent-1" },
+      "initiatedBy": { "type": "human", "id": "principal-user-1" },
+      "materializedBy": { "type": "system", "id": "principal-runtime-1" },
+      "archivedAt": null,
+      "source": "workflow",
+      "executionState": "pending",
+      "memoryScope": { "type": "workflow", "projectId": "project-1", "workflowId": "workflow-1", "dataDomains": ["release"], "sharing": "workflow_data_domain" },
+      "binding": {
+        "provenance": "released",
+        "agentVersionId": "agent-version-1",
+        "projectAgentAssignmentId": "assignment-1",
+        "assignmentVersionId": "assignment-version-1",
+        "resolvedConfigHash": "sha256:66cdc4c356fe15de0144c3980b6a758f7b17d4ef9e36eaa130c51a0aa08de606"
+      },
+      "workflowId": "workflow-1",
+      "workflowVersionId": "workflow-version-1",
+      "workflowRunId": "run-1",
+      "workflowRoleBindingId": "role-binding-1",
+      "workSlotKey": "review:0"
+    },
+    "sessionAttempt": {
+      "schemaVersion": "orchestrion.agent-session.v1",
+      "id": "attempt-1",
+      "orgId": "org-1",
+      "sessionId": "session-workflow-1",
+      "attemptNumber": 1,
+      "executionPlacementBindingId": "placement-binding-1",
+      "workspaceBindingId": "workspace-binding-1",
+      "sourceRevisionOrSnapshot": "git:b79a9a05ff8d5734dadf02014ff4e7b98921b955",
+      "runtimeOwner": { "engine": "local", "instanceId": "runtime-1", "epoch": 1 },
+      "fencingToken": "fence-1",
+      "effectiveAuthorityHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "resolvedConfigHash": "sha256:66cdc4c356fe15de0144c3980b6a758f7b17d4ef9e36eaa130c51a0aa08de606",
+      "accountingIdentity": "accounting-1",
+      "providerExecutionRef": null,
+      "fallback": "forbidden",
+      "outcome": "running",
+      "createdAt": "2026-09-20T00:00:00Z"
+    }
+  },
+  "invalid": [
+    {
+      "name": "project_agent_requires_home_project",
+      "contract": "agentIdentity",
+      "value": {
+        "schemaVersion": "orchestrion.agent-session.v1",
+        "id": "agent-invalid",
+        "orgId": "org-1",
+        "name": "Invalid",
+        "visibility": "project",
+        "homeProjectId": null,
+        "derivedFromAgentVersionId": null,
+        "agentPrincipal": { "type": "agent", "id": "principal-agent-invalid" }
+      }
+    },
+    {
+      "name": "active_direct_session_cannot_be_archived",
+      "contract": "agentSession",
+      "value": {
+        "schemaVersion": "orchestrion.agent-session.v1",
+        "id": "session-invalid",
+        "orgId": "org-1",
+        "projectId": "project-1",
+        "agentId": "agent-1",
+        "agentPrincipal": { "type": "agent", "id": "principal-agent-1" },
+        "initiatedBy": { "type": "human", "id": "principal-user-1" },
+        "materializedBy": { "type": "system", "id": "principal-runtime-1" },
+        "archivedAt": "2026-09-20T00:00:00Z",
+        "source": "direct",
+        "lifecycle": "active",
+        "memoryScope": { "type": "direct", "projectId": "project-1", "sessionId": "session-invalid", "sharing": "session_only" },
+        "binding": {
+          "provenance": "released",
+          "agentVersionId": "agent-version-1",
+          "projectAgentAssignmentId": "assignment-1",
+          "assignmentVersionId": "assignment-version-1",
+          "resolvedConfigHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      }
+    },
+    {
+      "name": "released_session_requires_principal_attribution",
+      "contract": "agentSession",
+      "value": {
+        "schemaVersion": "orchestrion.agent-session.v1",
+        "id": "session-invalid-principal",
+        "orgId": "org-1",
+        "projectId": "project-1",
+        "agentId": "agent-1",
+        "agentPrincipal": null,
+        "initiatedBy": { "type": "human", "id": "principal-user-1" },
+        "materializedBy": { "type": "system", "id": "principal-runtime-1" },
+        "archivedAt": null,
+        "source": "direct",
+        "lifecycle": "active",
+        "memoryScope": { "type": "direct", "projectId": "project-1", "sessionId": "session-invalid-principal", "sharing": "session_only" },
+        "binding": {
+          "provenance": "released",
+          "agentVersionId": "agent-version-1",
+          "projectAgentAssignmentId": "assignment-1",
+          "assignmentVersionId": "assignment-version-1",
+          "resolvedConfigHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      }
+    },
+    {
+      "name": "attempt_fallback_is_fail_closed",
+      "contract": "sessionAttempt",
+      "value": {
+        "schemaVersion": "orchestrion.agent-session.v1",
+        "id": "attempt-invalid",
+        "orgId": "org-1",
+        "sessionId": "session-workflow-1",
+        "attemptNumber": 1,
+        "executionPlacementBindingId": "placement-binding-1",
+        "workspaceBindingId": "workspace-binding-1",
+        "sourceRevisionOrSnapshot": "git:b79a9a05ff8d5734dadf02014ff4e7b98921b955",
+        "runtimeOwner": { "engine": "local", "instanceId": "runtime-1", "epoch": 1 },
+        "fencingToken": "fence-1",
+        "effectiveAuthorityHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "resolvedConfigHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "accountingIdentity": "accounting-1",
+        "providerExecutionRef": null,
+        "fallback": "allowed",
+        "outcome": "running",
+        "createdAt": "2026-09-20T00:00:00Z"
+      }
+    }
+  ]
+}
