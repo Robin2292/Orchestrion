@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 
 const app = resolve(process.argv[2] ?? "dist/mac-arm64/Orchestrion.app");
+const checkUpdater = process.argv[3] === "--check-updater";
 const expectedVersion = JSON.parse(await readFile(resolve("package.json"), "utf8")).version;
 const profile = await mkdtemp(join(tmpdir(), "orclocal-139-launch-"));
 const server = createServer();
@@ -59,8 +60,20 @@ try {
     'window.orchestrion.updaterBridge.getState().then(({ phase, currentVersion }) => ({ phase, currentVersion }))');
   assert.equal(updateState?.currentVersion, expectedVersion, "packaged preload updater bridge did not report app version");
   assert.ok(["idle", "checking", "error"].includes(updateState.phase), "packaged updater state is invalid");
+  if (checkUpdater) {
+    await inspectRenderer(page.webSocketDebuggerUrl,
+      'window.__orchestrionUpdaterPhases = []; window.orchestrion.updaterBridge.onState(state => window.__orchestrionUpdaterPhases.push(state.phase)); void window.orchestrion.updaterBridge.check(); true');
+    let phases = [];
+    const updaterDeadline = Date.now() + 10_000;
+    while (Date.now() < updaterDeadline) {
+      phases = await inspectRenderer(page.webSocketDebuggerUrl, "window.__orchestrionUpdaterPhases");
+      if (phases.includes("checking")) break;
+      await new Promise(done => setTimeout(done, 100));
+    }
+    assert.ok(phases.includes("checking"), "packaged updater did not start a real update check");
+  }
   console.log(JSON.stringify({ result: "PACKAGED_APP_LAUNCH_PASS", renderer: "app.asar/out/renderer/index.html", projectTree,
-    updaterBridge: true }));
+    updaterBridge: true, updaterActive: checkUpdater }));
 } finally {
   child.kill("SIGTERM");
   await Promise.race([once(child, "exit"), new Promise(done => setTimeout(done, 5000))]);

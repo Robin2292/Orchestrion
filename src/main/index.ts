@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, utilityProcess } from "electron";
 import { createNavigationGuard, isLoopbackRendererUrl, prototypeSearch, withPrototypeSearch } from "./navigation";
@@ -97,7 +98,11 @@ void app.whenReady().then(async () => {
   unregisterIpc = registerIpc(host, documents, currentWindowState);
   // The updater runs only in Electron main. Development never imports its
   // network-capable implementation or starts a check timer.
-  const autoUpdater = app.isPackaged ? (await import("electron-updater")).autoUpdater : null;
+  // electron-updater is CommonJS; Node's ESM namespace does not expose its
+  // autoUpdater getter as a named export in the packaged main process.
+  const autoUpdater = app.isPackaged
+    ? (createRequire(import.meta.url)("electron-updater") as typeof import("electron-updater")).autoUpdater
+    : null;
   updater = new DesktopUpdater(app.isPackaged, app.getVersion(), autoUpdater);
   unregisterUpdaterIpc = registerUpdaterIpc(updater, documents);
   updater.start();
