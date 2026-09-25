@@ -36,7 +36,7 @@ pnpm dist:signed:check
 pnpm dist:signed
 ```
 
-The app must pass signature, notarization, Gatekeeper, installer, anonymous feed, and old-version-to-new-version update checks before a public Release. A successful local signed build proves only the local artifact checks. No public Release is available yet.
+Public builds are available from [GitHub Releases](https://github.com/Robin2292/Orchestrion/releases). Versions 0.1.0 and 0.1.1 have a packaged updater startup defect and cannot update themselves; install a newer DMG manually. A successful local signed build proves the local artifact checks. The in-app update path also requires an anonymous feed and a real old-version-to-new-version installation test.
 
 ## License
 
